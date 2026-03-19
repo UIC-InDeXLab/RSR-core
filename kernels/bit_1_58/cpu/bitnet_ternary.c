@@ -1,145 +1,251 @@
 /*
- * BitNet.cpp-style ternary GEMV baseline.
+ * BitNet.cpp-style ternary GEMV baseline (official I2_S approach).
  *
- * TQ2_0-style 2-bit packing: each ternary value {-1, 0, +1} is stored as 2 bits.
- *   00 = 0,  01 = +1,  10 = -1
- *
- * The kernel does conditional add/sub — no multiplications in the inner loop.
- * AVX2 path processes 16 ternary weights per iteration.
+ * Faithfully follows microsoft/BitNet src/ggml-bitnet-mad.cpp:
+ *   - 2-bit weight coding: -1 -> 0, 0 -> 1, +1 -> 2
+ *   - 4-row interleaved packing: byte = (q0<<6)|(q1<<4)|(q2<<2)|q3
+ *   - int8 activation quantization (per-tensor absmax -> 127)
+ *   - AVX2 kernel: _mm256_maddubs_epi16 for uint8_weight * int8_activation
+ *   - Bias correction: subtract sum(qv) per row (because code = ternary_val + 1)
  *
  * Compile:
- *   gcc -O3 -march=native -mavx2 -fopenmp -shared -fPIC -o bitnet_ternary.so bitnet_ternary.c
+ *   gcc -O3 -march=native -mavx2 -shared -fPIC -o bitnet_ternary.so bitnet_ternary.c -lm
  */
 
+#include <math.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
-#include <immintrin.h>
 
-#ifdef _OPENMP
-#include <omp.h>
+#if defined(__AVX2__)
+#include <immintrin.h>
 #endif
 
 /*
  * Pack ternary matrix M (int8, values {-1,0,+1}, row-major n×n)
- * into 2-bit format: 4 values per byte, row-major.
- * packed size = n * ceil(n/4) bytes.
+ * into 2-bit format following BitNet.cpp I2_S non-ACT_PARALLEL layout.
+ *
+ * Encoding: -1 -> 0, 0 -> 1, +1 -> 2
+ *
+ * Groups of 4 rows are interleaved per column:
+ *   byte = (code_row0 << 6) | (code_row1 << 4) | (code_row2 << 2) | code_row3
+ *
+ * Output size: (n * n) / 4 bytes.  n must be divisible by 4.
  */
 void bitnet_ternary_pack(
     const int8_t *M,       /* n x n, row-major, values {-1,0,+1} */
-    uint8_t      *packed,  /* out: n * ((n+3)/4) bytes */
+    uint8_t      *packed,  /* out: n*n/4 bytes */
     int           n
 )
 {
-    int cols_packed = (n + 3) / 4;
+    int n_row_groups = n / 4;
+    memset(packed, 0, (size_t)(n * n) / 4);
 
-    #pragma omp parallel for
-    for (int i = 0; i < n; i++) {
-        const int8_t *row = M + (int64_t)i * n;
-        uint8_t *out_row = packed + (int64_t)i * cols_packed;
+    for (int rg = 0; rg < n_row_groups; rg++) {
+        int r0 = rg * 4;
+        int base = rg * n;  /* output byte offset */
 
-        for (int j4 = 0; j4 < cols_packed; j4++) {
-            uint8_t byte = 0;
-            for (int sub = 0; sub < 4; sub++) {
-                int j = j4 * 4 + sub;
-                uint8_t code = 0;  /* 0 */
-                if (j < n) {
-                    if (row[j] == 1)  code = 1;  /* 01 = +1 */
-                    if (row[j] == -1) code = 2;  /* 10 = -1 */
-                }
-                byte |= (code << (sub * 2));
-            }
-            out_row[j4] = byte;
+        for (int col = 0; col < n; col++) {
+            /* Encode: -1 -> 0, 0 -> 1, +1 -> 2 */
+            uint8_t q0 = (uint8_t)(M[(r0 + 0) * n + col] + 1);
+            uint8_t q1 = (uint8_t)(M[(r0 + 1) * n + col] + 1);
+            uint8_t q2 = (uint8_t)(M[(r0 + 2) * n + col] + 1);
+            uint8_t q3 = (uint8_t)(M[(r0 + 3) * n + col] + 1);
+            packed[base + col] = (uint8_t)((q0 << 6) | (q1 << 4) | (q2 << 2) | q3);
         }
     }
 }
 
 /*
- * Ternary GEMV: y = packed_M @ v
- *
- * For each row: decode 2-bit weights and do conditional add/sub.
+ * Per-tensor int8 quantization for activation vector.
+ * scale = 127 / max(|v|),  qv[i] = round(v[i] * scale), clamped to [-127, 127].
+ * Returns the inverse scale (1/scale = max(|v|)/127) for dequantization.
  */
+float bitnet_ternary_quantize_activation(const float *v, int8_t *qv, int n)
+{
+    float amax = 0.0f;
+    for (int i = 0; i < n; i++) {
+        float a = fabsf(v[i]);
+        if (a > amax) amax = a;
+    }
+
+    if (amax < 1e-10f) {
+        memset(qv, 0, (size_t)n);
+        return 0.0f;
+    }
+
+    float scale = 127.0f / amax;
+    for (int i = 0; i < n; i++) {
+        int q = (int)roundf(v[i] * scale);
+        if (q > 127) q = 127;
+        if (q < -127) q = -127;
+        qv[i] = (int8_t)q;
+    }
+
+    return 1.0f / scale;  /* inv_act_scale */
+}
+
+/*
+ * GEMV for packed I2_S ternary weights:
+ *   out = M @ v  (approximately, due to int8 activation quantization)
+ *
+ * packed layout: groups of 4 rows interleaved, 2-bit codes per weight.
+ * Stored code = ternary_val + 1, so:
+ *   sum(code * qv) = sum((ternary_val + 1) * qv) = sum(ternary_val * qv) + sum(qv)
+ * We subtract sum(qv) to recover the ternary dot product.
+ *
+ * Final: out[row] = (raw_dot - sum_qv) * inv_act_scale
+ *
+ * (No i2_scale needed for ternary {-1,0,+1} — weights are exact.)
+ */
+
+#if defined(__AVX2__)
+
 void bitnet_ternary_gemv(
-    const uint8_t *packed,  /* n * ((n+3)/4) bytes */
-    const float   *v,       /* n */
+    const uint8_t *packed,  /* n*n/4 bytes, 4-row interleaved */
+    const int8_t  *qv,      /* n, quantized activation */
     float         *out,     /* n */
-    int            n
+    int            n,
+    float          inv_act_scale
 )
 {
-    int cols_packed = (n + 3) / 4;
+    const __m256i mask = _mm256_set1_epi8(0x03);
+    const __m256i one16 = _mm256_set1_epi16(1);
 
-    #pragma omp parallel for schedule(static)
+    /* Precompute sum of quantized activations (for bias correction) */
+    int sum_qv = 0;
     for (int i = 0; i < n; i++) {
-        const uint8_t *row = packed + (int64_t)i * cols_packed;
-        float acc = 0.0f;
+        sum_qv += qv[i];
+    }
 
-        int j4 = 0;
+    int n_row_groups = n / 4;
 
-#ifdef __AVX2__
-        /* Process 16 ternary values (4 bytes) per iteration */
-        __m256 vacc = _mm256_setzero_ps();
+    for (int rg = 0; rg < n_row_groups; rg++) {
+        const uint8_t *px = packed + rg * n;
+        const int8_t *py = qv;
 
-        for (; j4 + 3 < cols_packed && (j4 * 4 + 15) < n; j4 += 4) {
-            /* Load 4 bytes = 16 ternary values */
-            uint32_t packed4;
-            memcpy(&packed4, row + j4, 4);
+        __m256i accu0 = _mm256_setzero_si256();
+        __m256i accu1 = _mm256_setzero_si256();
+        __m256i accu2 = _mm256_setzero_si256();
+        __m256i accu3 = _mm256_setzero_si256();
 
-            /* Process in groups of 8 (2 bytes each) */
-            for (int half = 0; half < 2; half++) {
-                uint16_t packed2 = (packed4 >> (half * 16)) & 0xFFFF;
-                int base_j = j4 * 4 + half * 8;
+        int col = 0;
+        for (; col + 31 < n; col += 32) {
+            /* Load 32 packed bytes = 32 columns x 4 rows */
+            __m256i raw = _mm256_loadu_si256((const __m256i *)(px + col));
 
-                /* Load 8 floats */
-                __m256 vx = _mm256_loadu_ps(v + base_j);
+            /* Extract each of 4 rows (2-bit fields) */
+            __m256i w0 = _mm256_and_si256(_mm256_srli_epi16(raw, 6), mask);
+            __m256i w1 = _mm256_and_si256(_mm256_srli_epi16(raw, 4), mask);
+            __m256i w2 = _mm256_and_si256(_mm256_srli_epi16(raw, 2), mask);
+            __m256i w3 = _mm256_and_si256(raw, mask);
 
-                /* Decode 8 ternary values from 16 bits */
-                /* Even bits = bit0, odd bits = bit1 for each 2-bit field */
-                /* For each of 8 values: code = (packed2 >> (i*2)) & 3 */
-                /* +1 mask: code == 1 (bit0=1, bit1=0) */
-                /* -1 mask: code == 2 (bit0=0, bit1=1) */
+            /* Load 32 int8 activation values */
+            __m256i act = _mm256_loadu_si256((const __m256i *)(py + col));
 
-                /* Build masks for 8 values */
-                __m256 plus_mask_f = _mm256_setzero_ps();
-                __m256 minus_mask_f = _mm256_setzero_ps();
+            /* maddubs: first arg unsigned (weight codes 0,1,2), second signed (int8 activation)
+             * Computes: pairs of u8*s8 summed into s16 */
+            __m256i d0 = _mm256_maddubs_epi16(w0, act);
+            __m256i d1 = _mm256_maddubs_epi16(w1, act);
+            __m256i d2 = _mm256_maddubs_epi16(w2, act);
+            __m256i d3 = _mm256_maddubs_epi16(w3, act);
 
-                /* Decode using scalar, build float masks */
-                float pm[8], mm[8];
-                for (int s = 0; s < 8; s++) {
-                    int code = (packed2 >> (s * 2)) & 3;
-                    pm[s] = (code == 1) ? 1.0f : 0.0f;
-                    mm[s] = (code == 2) ? 1.0f : 0.0f;
-                }
-                plus_mask_f = _mm256_loadu_ps(pm);
-                minus_mask_f = _mm256_loadu_ps(mm);
-
-                /* acc += x * plus_mask - x * minus_mask */
-                __m256 pos_contrib = _mm256_mul_ps(vx, plus_mask_f);
-                __m256 neg_contrib = _mm256_mul_ps(vx, minus_mask_f);
-                vacc = _mm256_add_ps(vacc, pos_contrib);
-                vacc = _mm256_sub_ps(vacc, neg_contrib);
-            }
+            /* Widen i16 -> i32 and accumulate */
+            accu0 = _mm256_add_epi32(accu0, _mm256_madd_epi16(d0, one16));
+            accu1 = _mm256_add_epi32(accu1, _mm256_madd_epi16(d1, one16));
+            accu2 = _mm256_add_epi32(accu2, _mm256_madd_epi16(d2, one16));
+            accu3 = _mm256_add_epi32(accu3, _mm256_madd_epi16(d3, one16));
         }
 
-        /* Horizontal sum */
-        __m128 lo = _mm256_castps256_ps128(vacc);
-        __m128 hi = _mm256_extractf128_ps(vacc, 1);
-        lo = _mm_add_ps(lo, hi);
-        lo = _mm_hadd_ps(lo, lo);
-        lo = _mm_hadd_ps(lo, lo);
-        acc = _mm_cvtss_f32(lo);
-#endif
+        /* Horizontal sum for each row accumulator */
+        __m128i lo, hi, sum128, hi64, sum64, hi32;
+
+        lo = _mm256_castsi256_si128(accu0);
+        hi = _mm256_extracti128_si256(accu0, 1);
+        sum128 = _mm_add_epi32(lo, hi);
+        hi64 = _mm_unpackhi_epi64(sum128, sum128);
+        sum64 = _mm_add_epi32(sum128, hi64);
+        hi32 = _mm_shuffle_epi32(sum64, _MM_SHUFFLE(2, 3, 0, 1));
+        int s0 = _mm_cvtsi128_si32(_mm_add_epi32(sum64, hi32));
+
+        lo = _mm256_castsi256_si128(accu1);
+        hi = _mm256_extracti128_si256(accu1, 1);
+        sum128 = _mm_add_epi32(lo, hi);
+        hi64 = _mm_unpackhi_epi64(sum128, sum128);
+        sum64 = _mm_add_epi32(sum128, hi64);
+        hi32 = _mm_shuffle_epi32(sum64, _MM_SHUFFLE(2, 3, 0, 1));
+        int s1 = _mm_cvtsi128_si32(_mm_add_epi32(sum64, hi32));
+
+        lo = _mm256_castsi256_si128(accu2);
+        hi = _mm256_extracti128_si256(accu2, 1);
+        sum128 = _mm_add_epi32(lo, hi);
+        hi64 = _mm_unpackhi_epi64(sum128, sum128);
+        sum64 = _mm_add_epi32(sum128, hi64);
+        hi32 = _mm_shuffle_epi32(sum64, _MM_SHUFFLE(2, 3, 0, 1));
+        int s2 = _mm_cvtsi128_si32(_mm_add_epi32(sum64, hi32));
+
+        lo = _mm256_castsi256_si128(accu3);
+        hi = _mm256_extracti128_si256(accu3, 1);
+        sum128 = _mm_add_epi32(lo, hi);
+        hi64 = _mm_unpackhi_epi64(sum128, sum128);
+        sum64 = _mm_add_epi32(sum128, hi64);
+        hi32 = _mm_shuffle_epi32(sum64, _MM_SHUFFLE(2, 3, 0, 1));
+        int s3 = _mm_cvtsi128_si32(_mm_add_epi32(sum64, hi32));
 
         /* Scalar tail */
-        for (; j4 < cols_packed; j4++) {
-            uint8_t byte = row[j4];
-            for (int sub = 0; sub < 4; sub++) {
-                int j = j4 * 4 + sub;
-                if (j >= n) break;
-                int code = (byte >> (sub * 2)) & 3;
-                if (code == 1) acc += v[j];        /* +1 */
-                else if (code == 2) acc -= v[j];   /* -1 */
-            }
+        for (; col < n; col++) {
+            uint8_t byte = px[col];
+            int8_t a = py[col];
+            s0 += ((byte >> 6) & 0x3) * a;
+            s1 += ((byte >> 4) & 0x3) * a;
+            s2 += ((byte >> 2) & 0x3) * a;
+            s3 += ((byte >> 0) & 0x3) * a;
         }
 
-        out[i] = acc;
+        /* Bias correction: code = val + 1, so subtract sum_qv per row */
+        out[rg * 4 + 0] = (float)(s0 - sum_qv) * inv_act_scale;
+        out[rg * 4 + 1] = (float)(s1 - sum_qv) * inv_act_scale;
+        out[rg * 4 + 2] = (float)(s2 - sum_qv) * inv_act_scale;
+        out[rg * 4 + 3] = (float)(s3 - sum_qv) * inv_act_scale;
     }
 }
+
+#else
+/* Scalar fallback */
+
+void bitnet_ternary_gemv(
+    const uint8_t *packed,
+    const int8_t  *qv,
+    float         *out,
+    int            n,
+    float          inv_act_scale
+)
+{
+    int sum_qv = 0;
+    for (int i = 0; i < n; i++) {
+        sum_qv += qv[i];
+    }
+
+    int n_row_groups = n / 4;
+
+    for (int rg = 0; rg < n_row_groups; rg++) {
+        const uint8_t *px = packed + rg * n;
+        int s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+
+        for (int col = 0; col < n; col++) {
+            uint8_t byte = px[col];
+            int8_t a = qv[col];
+            s0 += ((byte >> 6) & 0x3) * a;
+            s1 += ((byte >> 4) & 0x3) * a;
+            s2 += ((byte >> 2) & 0x3) * a;
+            s3 += ((byte >> 0) & 0x3) * a;
+        }
+
+        out[rg * 4 + 0] = (float)(s0 - sum_qv) * inv_act_scale;
+        out[rg * 4 + 1] = (float)(s1 - sum_qv) * inv_act_scale;
+        out[rg * 4 + 2] = (float)(s2 - sum_qv) * inv_act_scale;
+        out[rg * 4 + 3] = (float)(s3 - sum_qv) * inv_act_scale;
+    }
+}
+
+#endif

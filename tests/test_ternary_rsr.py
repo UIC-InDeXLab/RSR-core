@@ -13,6 +13,7 @@ from multiplier.bit_1_58.cpu.rsr_v1_5 import RSRTernaryV1_5Multiplier
 from multiplier.bit_1_58.cpu.rsr_v1_6 import RSRTernaryV1_6Multiplier
 from multiplier.bit_1_58.cpu.rsr_adaptive import RSRTernaryAdaptiveMultiplier
 from multiplier.bit_1_58.cpu.bitnet import BitNetTernaryMultiplier
+from multiplier.bit_1_58.cpu.tmac import TMACTernaryMultiplier
 
 
 @pytest.fixture(params=[16, 32, 64])
@@ -347,39 +348,86 @@ class TestTernaryRSRAdaptive:
 
 
 # ---------------------------------------------------------------------------
-# BitNet ternary baseline
+# BitNet ternary baseline (official I2_S — int8 activation quantization)
 # ---------------------------------------------------------------------------
 
 class TestBitNetTernary:
+    """BitNet I2_S uses int8 quantization so results are approximate."""
+
     def test_random(self, n):
+        if n % 4 != 0:
+            pytest.skip(f"n={n} not divisible by 4")
         M = random_ternary_matrix(n)
         v = random_vector(n)
         expected = PytorchMultiplier(M)(v)
         actual = BitNetTernaryMultiplier(M)(v)
-        torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(actual, expected, atol=0.15, rtol=0.05)
 
     def test_identity(self, n):
+        if n % 4 != 0:
+            pytest.skip(f"n={n} not divisible by 4")
         M = torch.eye(n, dtype=torch.float32)
         v = random_vector(n)
         actual = BitNetTernaryMultiplier(M)(v)
-        torch.testing.assert_close(actual, v)
+        torch.testing.assert_close(actual, v, atol=0.15, rtol=0.05)
 
     def test_neg_identity(self, n):
+        if n % 4 != 0:
+            pytest.skip(f"n={n} not divisible by 4")
         M = -torch.eye(n, dtype=torch.float32)
         v = random_vector(n)
         actual = BitNetTernaryMultiplier(M)(v)
-        torch.testing.assert_close(actual, -v)
+        torch.testing.assert_close(actual, -v, atol=0.15, rtol=0.05)
 
     def test_all_zeros(self, n):
+        if n % 4 != 0:
+            pytest.skip(f"n={n} not divisible by 4")
         M = torch.zeros(n, n, dtype=torch.float32)
         v = random_vector(n)
         actual = BitNetTernaryMultiplier(M)(v)
-        torch.testing.assert_close(actual, torch.zeros(n))
+        torch.testing.assert_close(actual, torch.zeros(n), atol=1e-6, rtol=0)
 
     def test_multiple_vectors(self, n):
+        if n % 4 != 0:
+            pytest.skip(f"n={n} not divisible by 4")
         M = random_ternary_matrix(n)
         bn = BitNetTernaryMultiplier(M)
         pytorch = PytorchMultiplier(M)
         for _ in range(5):
             v = random_vector(n)
-            torch.testing.assert_close(bn(v), pytorch(v))
+            torch.testing.assert_close(bn(v), pytorch(v), atol=0.15, rtol=0.05)
+
+
+# ---------------------------------------------------------------------------
+# T-MAC ternary baseline (LUT-based — int8 LUT quantization)
+# ---------------------------------------------------------------------------
+
+class TestTMACTernary:
+    """T-MAC uses int8 LUT quantization so results are approximate."""
+
+    def test_random(self, n):
+        M = random_ternary_matrix(n)
+        v = random_vector(n)
+        expected = PytorchMultiplier(M)(v)
+        actual = TMACTernaryMultiplier(M)(v)
+        torch.testing.assert_close(actual, expected, atol=0.2, rtol=0.05)
+
+    def test_all_zeros(self, n):
+        M = torch.zeros(n, n, dtype=torch.float32)
+        v = random_vector(n)
+        actual = TMACTernaryMultiplier(M)(v)
+        torch.testing.assert_close(actual, torch.zeros(n), atol=1e-6, rtol=0)
+
+    def test_neg_identity(self, n):
+        M = -torch.eye(n, dtype=torch.float32)
+        v = random_vector(n)
+        actual = TMACTernaryMultiplier(M)(v)
+        torch.testing.assert_close(actual, -v, atol=0.2, rtol=0.05)
+
+    def test_multiple_vectors(self, n):
+        M = random_ternary_matrix(n)
+        tmac = TMACTernaryMultiplier(M)
+        pytorch = PytorchMultiplier(M)
+        for _ in range(5):
+            v = random_vector(n)
+            torch.testing.assert_close(tmac(v), pytorch(v), atol=0.2, rtol=0.05)

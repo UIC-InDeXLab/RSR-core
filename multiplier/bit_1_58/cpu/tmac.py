@@ -1,11 +1,8 @@
 """
-BitNet.cpp-style ternary GEMV baseline (official I2_S approach).
+T-MAC-style ternary GEMV baseline (LUT-based, following microsoft/T-MAC).
 
-Faithfully follows microsoft/BitNet's I2_S kernel:
-  - 2-bit weight coding: -1 -> 0, 0 -> 1, +1 -> 2
-  - 4-row interleaved packing layout
-  - int8 activation quantization (per-tensor absmax)
-  - AVX2 maddubs dot product with bias correction
+Core idea: group 2 ternary weights per 4-bit nibble, build 16-entry LUT
+per activation pair, use _mm256_shuffle_epi8 (pshufb) for 32 parallel lookups.
 """
 
 import ctypes
@@ -20,39 +17,39 @@ _DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "kernels", "bit_1_58", "cpu"
 )
 
-_lib = ctypes.CDLL(os.path.join(_DIR, "bitnet_ternary.so"))
+_lib = ctypes.CDLL(os.path.join(_DIR, "tmac_ternary.so"))
 
-_lib.bitnet_ternary_pack.restype = None
-_lib.bitnet_ternary_pack.argtypes = [
+_lib.tmac_ternary_pack.restype = None
+_lib.tmac_ternary_pack.argtypes = [
     ctypes.POINTER(ctypes.c_int8),    # M
     ctypes.POINTER(ctypes.c_uint8),   # packed
     ctypes.c_int,                     # n
 ]
 
-_lib.bitnet_ternary_quantize_activation.restype = ctypes.c_float
-_lib.bitnet_ternary_quantize_activation.argtypes = [
+_lib.tmac_ternary_build_lut.restype = None
+_lib.tmac_ternary_build_lut.argtypes = [
     ctypes.POINTER(ctypes.c_float),   # v
-    ctypes.POINTER(ctypes.c_int8),    # qv
+    ctypes.POINTER(ctypes.c_int8),    # qlut
+    ctypes.POINTER(ctypes.c_float),   # lut_scale
     ctypes.c_int,                     # n
 ]
 
-_lib.bitnet_ternary_gemv.restype = None
-_lib.bitnet_ternary_gemv.argtypes = [
+_lib.tmac_ternary_gemv.restype = None
+_lib.tmac_ternary_gemv.argtypes = [
     ctypes.POINTER(ctypes.c_uint8),   # packed
-    ctypes.POINTER(ctypes.c_int8),    # qv
+    ctypes.POINTER(ctypes.c_int8),    # qlut
+    ctypes.c_float,                   # lut_scale
     ctypes.POINTER(ctypes.c_float),   # out
     ctypes.c_int,                     # n
-    ctypes.c_float,                   # inv_act_scale
 ]
 
 
-class BitNetTernaryMultiplier(Multiplier):
-    """BitNet.cpp-style ternary GEMV: I2_S encoding, int8 activations, maddubs."""
+class TMACTernaryMultiplier(Multiplier):
+    """T-MAC-style ternary GEMV: LUT + pshufb, groups of 2 ternary weights."""
 
     def __init__(self, M: torch.Tensor):
         n = M.shape[0]
         assert M.shape[1] == n, "Matrix must be square"
-        assert n % 4 == 0, f"n={n} must be divisible by 4 (I2_S 4-row interleave)"
         self.n = n
         super().__init__(M)
         self.prep()
@@ -61,10 +58,11 @@ class BitNetTernaryMultiplier(Multiplier):
         n = self.n
         M_np = self.M.cpu().to(torch.int8).numpy().copy()
 
-        # Packed size: n*n/4 bytes (4-row interleaved, 2 bits per weight)
-        self._packed = np.empty(n * n // 4, dtype=np.uint8)
+        n_groups = (n + 1) // 2
+        row_bytes = (n + 1) // 2
+        self._packed = np.zeros(n_groups * row_bytes, dtype=np.uint8)
 
-        _lib.bitnet_ternary_pack(
+        _lib.tmac_ternary_pack(
             M_np.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
             self._packed.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
             n,
@@ -73,21 +71,25 @@ class BitNetTernaryMultiplier(Multiplier):
     def __call__(self, v: torch.Tensor) -> torch.Tensor:
         n = self.n
         v_np = v.detach().cpu().float().numpy().copy()
-        qv = np.empty(n, dtype=np.int8)
 
-        inv_act_scale = _lib.bitnet_ternary_quantize_activation(
+        n_groups = (n + 1) // 2
+        qlut = np.empty(n_groups * 16, dtype=np.int8)
+        lut_scale = np.empty(1, dtype=np.float32)
+
+        _lib.tmac_ternary_build_lut(
             v_np.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-            qv.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
+            qlut.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
+            lut_scale.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
             n,
         )
 
         out = np.empty(n, dtype=np.float32)
-        _lib.bitnet_ternary_gemv(
+        _lib.tmac_ternary_gemv(
             self._packed.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
-            qv.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
+            qlut.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
+            float(lut_scale[0]),
             out.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
             n,
-            inv_act_scale,
         )
 
         return torch.from_numpy(out).to(v.device)
