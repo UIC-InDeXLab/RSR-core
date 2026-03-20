@@ -1,6 +1,14 @@
 /*
  * T-MAC-style ternary GEMV baseline (LUT-based, following microsoft/T-MAC).
  *
+ * Upstream reference:
+ *   - Repo: https://github.com/microsoft/T-MAC
+ *   - Files:
+ *     https://github.com/microsoft/T-MAC/blob/main/python/t_mac/intrins/lut_ctor.cc
+ *     https://github.com/microsoft/T-MAC/blob/main/python/t_mac/intrins/tbl.cc
+ *     https://github.com/microsoft/T-MAC/blob/main/python/t_mac/weights.py
+ *   - This kernel is a simplified/adapted baseline built from those LUT ideas.
+ *
  * Core idea from T-MAC (microsoft/T-MAC) and BitNet.cpp TL2 kernel:
  *   - Group 2 consecutive ternary weights per 4-bit nibble index.
  *   - 3^2 = 9 possible ternary combinations fit in a 16-entry LUT.

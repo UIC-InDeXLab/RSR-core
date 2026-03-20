@@ -8,6 +8,12 @@
  *   - AVX2 kernel: _mm256_maddubs_epi16 for uint8_weight * int8_activation
  *   - Bias correction: subtract sum(qv) per row (because code = ternary_val + 1)
  *
+ * Upstream reference:
+ *   - Repo: https://github.com/microsoft/BitNet
+ *   - File: https://github.com/microsoft/BitNet/blob/main/src/ggml-bitnet-mad.cpp
+ *   - Routines mirrored here: quantize_i2_s (non-ACT path), ggml_vec_dot_i2_i8_s_*
+ *   - Note: standalone GEMV adaptation for this project, not a full ggml runtime port.
+ *
  * Compile:
  *   gcc -O3 -march=native -mavx2 -shared -fPIC -o bitnet_ternary.so bitnet_ternary.c -lm
  */

@@ -6,6 +6,12 @@
  *   - 4-row interleaved packing layout from quantize_i2_s non-ACT path.
  *   - int8 activation quantization and SIMD int2xint8 accumulation.
  *
+ * Upstream reference:
+ *   - Repo: https://github.com/microsoft/BitNet
+ *   - File: https://github.com/microsoft/BitNet/blob/main/src/ggml-bitnet-mad.cpp
+ *   - Routines mirrored here: quantize_i2_s (non-ACT path), ggml_vec_dot_i2_i8_s_*
+ *   - Note: standalone GEMV adaptation for this project, not a full ggml runtime port.
+ *
  * Exposed C ABI is tailored for multiplier/bitnet_official.py.
  */
 

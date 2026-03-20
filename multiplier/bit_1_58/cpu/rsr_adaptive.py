@@ -1,13 +1,14 @@
 """
 Ternary RSR adaptive — supports any positive k by zero-padding M.
 
-Wraps the fastest ternary C kernel (v1.6) internally.
+Wraps the fastest compatible ternary C kernel internally.
 """
 
 import torch
 
 from multiplier.base import Multiplier
-from .rsr_v1_6 import RSRTernaryV1_6Multiplier
+from .rsr_v3_1 import RSRTernaryV3_1Multiplier
+from .rsr_v2_0 import RSRTernaryV2_0Multiplier
 
 
 class RSRTernaryAdaptiveMultiplier(Multiplier):
@@ -35,7 +36,10 @@ class RSRTernaryAdaptiveMultiplier(Multiplier):
             )
             M_padded[: self.n, : self.n] = self.M
 
-        self._inner = RSRTernaryV1_6Multiplier(M_padded, self.k)
+        if self.n_padded <= 65535:
+            self._inner = RSRTernaryV3_1Multiplier(M_padded, self.k)
+        else:
+            self._inner = RSRTernaryV2_0Multiplier(M_padded, self.k)
 
     def __call__(self, v: torch.Tensor) -> torch.Tensor:
         if self.pad == 0:

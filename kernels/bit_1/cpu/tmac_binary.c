@@ -1,6 +1,14 @@
 /*
  * T-MAC-style binary GEMV baseline (LUT-based, following microsoft/T-MAC).
  *
+ * Upstream reference:
+ *   - Repo: https://github.com/microsoft/T-MAC
+ *   - Files:
+ *     https://github.com/microsoft/T-MAC/blob/main/python/t_mac/intrins/lut_ctor.cc
+ *     https://github.com/microsoft/T-MAC/blob/main/python/t_mac/intrins/tbl.cc
+ *     https://github.com/microsoft/T-MAC/blob/main/python/t_mac/weights.py
+ *   - This kernel is a simplified/adapted baseline built from those LUT ideas.
+ *
  * For binary {0, 1} weights, we map to T-MAC's {-1, +1} representation:
  *   w_tmac = 2*w - 1  (0 -> -1, 1 -> +1)
  *
