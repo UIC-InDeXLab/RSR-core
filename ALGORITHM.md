@@ -337,6 +337,32 @@ Summing over all groups reproduces the full dot product.
 
 ---
 
+## Extension to Non-Square Matrices
+
+### Problem Statement
+
+The algorithm above assumes `M` is square (`n × n`). In practice, weight matrices in neural networks are typically non-square: `M` is `n_rows × n_cols`, `v` has length `n_cols`, and the output `y` has length `n_rows`.
+
+### Changes
+
+The generalization is straightforward — only the block dimensions change:
+
+1. **Block decomposition**: `M` is split into horizontal blocks of `k` rows each. Block `b` is `M[b·k : (b+1)·k, :]` with shape `(k, n_cols)` instead of `(k, n)`. The number of blocks is `num_blocks = n_rows / k`.
+
+2. **Column encoding**: Each of the `n_cols` columns is encoded as a `k`-bit integer (unchanged logic, just iterating over `n_cols` columns instead of `n`).
+
+3. **Permutation arrays**: Each block's permutation `perms[b]` has `n_cols` entries (one per column), not `n`.
+
+4. **Input vector**: `v` has length `n_cols`. The permuted vector `v_perm[b]` also has `n_cols` entries.
+
+5. **Output vector**: `y` has length `n_rows = num_blocks · k`. The scatter phase writes to rows within each `k`-sized block, concatenated to form the full output.
+
+6. **Row padding**: If `n_rows` is not divisible by `k`, pad `M` with zero rows to the nearest multiple of `k` and trim the output back to `n_rows` after inference.
+
+Everything else — the aggregate-then-scatter pattern, the counting sort, the group structure — remains identical. The inference kernel does not need to know `n_rows` at all; it only needs `n_cols` (as the permutation stride), `k`, and `num_blocks`.
+
+---
+
 ## Extension to Ternary Matrices (1.58-bit)
 
 ### Problem Statement

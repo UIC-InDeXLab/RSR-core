@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS = -O3 -Wall -march=native -fomit-frame-pointer
 
-all: bitnet_i2s.so bitnet_official.so tmac_binary.so rsr.so rsr_v4_2.so rsr_v2_4.so rsr_prep.so
+all: bitnet_i2s.so bitnet_official.so tmac_binary.so rsr.so rsr_v4_2.so rsr_v2_4.so rsr_prep.so rsr_prep_nonsquare.so
 
 bitnet_i2s.so: bitnet_i2s.c
 	$(CC) $(CFLAGS) -mavx2 -shared -fPIC -o bitnet_i2s.so bitnet_i2s.c -lm
@@ -24,5 +24,8 @@ rsr_v2_4.so: rsr_v2_4.c
 rsr_prep.so: rsr_prep.c
 	$(CC) $(CFLAGS) -fopenmp -shared -fPIC -o rsr_prep.so rsr_prep.c
 
+rsr_prep_nonsquare.so: rsr_prep_nonsquare.c
+	$(CC) $(CFLAGS) -fopenmp -shared -fPIC -o rsr_prep_nonsquare.so rsr_prep_nonsquare.c
+
 clean:
-	rm -f rsr.so rsr_v4_2.so bitnet_i2s.so bitnet_official.so tmac_binary.so rsr_v2_4.so rsr_prep.so
+	rm -f rsr.so rsr_v4_2.so bitnet_i2s.so bitnet_official.so tmac_binary.so rsr_v2_4.so rsr_prep.so rsr_prep_nonsquare.so
