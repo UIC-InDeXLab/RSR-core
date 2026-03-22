@@ -2,9 +2,10 @@ import pytest
 import torch
 
 from multiplier.bit_1_58.pytorch import PytorchMultiplier
-from multiplier.bit_1_58.cuda.rsr_cuda_v1_0 import RSRTernaryCudaV1_0Multiplier
-from multiplier.bit_1_58.cuda.rsr_cuda_v1_1 import RSRTernaryCudaV1_1Multiplier
-from multiplier.bit_1_58.cuda.rsr_cuda_v1_2 import RSRTernaryCudaV1_2Multiplier
+from multiplier.bit_1_58.cuda.rsr_cuda_v6_0 import RSRTernaryCudaV6_0Multiplier
+from multiplier.bit_1_58.cuda.rsr_cuda_v6_3 import RSRTernaryCudaV6_3Multiplier
+from multiplier.bit_1_58.cuda.rsr_cuda_v6_5 import RSRTernaryCudaV6_5Multiplier
+from multiplier.bit_1_58.cuda.rsr_cuda_v10_1 import RSRTernaryCudaV10_1Multiplier
 from multiplier.bit_1_58.cuda.rsr_cuda_adaptive import RSRTernaryCudaAdaptiveMultiplier
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -31,9 +32,10 @@ def random_vector(n, device):
 @pytest.mark.parametrize(
     "cls",
     [
-        RSRTernaryCudaV1_0Multiplier,
-        RSRTernaryCudaV1_1Multiplier,
-        RSRTernaryCudaV1_2Multiplier,
+        RSRTernaryCudaV6_0Multiplier,
+        RSRTernaryCudaV6_3Multiplier,
+        RSRTernaryCudaV6_5Multiplier,
+        RSRTernaryCudaV10_1Multiplier,
     ],
 )
 class TestTernaryCudaMatchesPytorch:

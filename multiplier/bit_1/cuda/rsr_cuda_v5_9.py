@@ -12,13 +12,18 @@ from torch.utils.cpp_extension import load
 from ..base import Multiplier
 from ._prep_cuda import prep_on_cpu_move_to_cuda
 
+# Always set TORCH_CUDA_ARCH_LIST (some libraries like BitBLAS may set it incorrectly)
+if torch.cuda.is_available():
+    _major, _minor = torch.cuda.get_device_capability()
+    os.environ["TORCH_CUDA_ARCH_LIST"] = f"{_major}.{_minor}"
+
 _kernel_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "kernels", "bit_1", "cuda")
 
 _module = load(
     name="rsr_cuda_v5_9",
     sources=[os.path.join(_kernel_dir, "rsr_v5_9.cu")],
     extra_cuda_cflags=["-O3"],
-    verbose=True,  # see the JIT logs
+    verbose=False,
 )
 
 
