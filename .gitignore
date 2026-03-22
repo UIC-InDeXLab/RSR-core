@@ -64,3 +64,5 @@ env/
 .env.local
 
 .key
+
+benchmarking/**/reports/

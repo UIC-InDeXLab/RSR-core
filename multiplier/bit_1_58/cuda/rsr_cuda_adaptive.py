@@ -3,8 +3,10 @@ RSR ternary CUDA adaptive — auto-selects best kernel based on n and k.
 
 Selection strategy:
   - Uses v6.3 for all cases.
-  - Non-divisible n: pads matrix to next multiple of lcm(effective_k, 4)
-    to satisfy both k-divisibility and the kernel's 4-alignment requirement.
+  - Non-divisible n: pads matrix to next multiple of lcm(effective_k, 32).
+    The v6.3 kernel uses int4 (16-byte) loads on the input vector and
+    uint32_t loads on packed weights (row stride = n/4 bytes), so n must be
+    divisible by 32 to keep all memory accesses aligned.
 """
 
 import math
@@ -22,8 +24,8 @@ class RSRTernaryCudaAdaptiveMultiplier(Multiplier):
         super().__init__(M)
 
         effective_k = min(k, 12)
-        # v6.3 requires n % 4 == 0 and n % k == 0
-        align = math.lcm(effective_k, 4)
+        # v6.3 needs n divisible by both k and 32 (for aligned int4/uint32_t loads)
+        align = math.lcm(effective_k, 32)
 
         if self.n % align != 0:
             padded_n = ((self.n + align - 1) // align) * align

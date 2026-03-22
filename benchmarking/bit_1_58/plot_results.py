@@ -154,13 +154,14 @@ def plot_cuda_only_best_times(csv_path: Path, out_path: Path, ignore_methods=Non
     methods, best = read_best_times(csv_path)
     methods = filter_methods(methods, ignore_methods=ignore_methods, warn_unknown=False)
     has_explicit_cuda = any("cuda" in m.lower() for m in methods)
-    cuda_baseline_prefixes = ("pytorch", "rsr_py")
+    is_cuda_csv = "cuda" in csv_path.stem.lower()
+    cuda_baseline_prefixes = ("pytorch", "rsr_py", "bitnet", "bitblas")
     cuda_methods = [
         m
         for m in methods
         if "cuda" in m.lower()
         or (
-            has_explicit_cuda
+            (has_explicit_cuda or is_cuda_csv)
             and any(m.lower().startswith(p) for p in cuda_baseline_prefixes)
         )
     ]
@@ -234,7 +235,7 @@ def main():
     parser.add_argument(
         "--ignore-cpu",
         nargs="*",
-        default=["v1", "pytorch", "rsr_py"],
+        default=["v1.1", "v1.0", "v1.2", "pytorch", "tmac", "v1.3", "v1.4", "v1.5", "pytorch_bf16"],
         help=(
             "Additional methods to exclude only from the main/CPU plot. "
             "Use space-separated names or comma-separated."
@@ -243,7 +244,7 @@ def main():
     parser.add_argument(
         "--ignore-cuda",
         nargs="*",
-        default=["cuda_v1", "rsr_py", "pytorch_fp32", "pytorch_int8"],
+        default=["cuda_v1", "rsr_py", "pytorch_fp32", "pytorch_int8", "v1.1", "v1.0", "v1.2"],
         help=(
             "Additional methods to exclude only from the CUDA-only plot. "
             "Use space-separated names or comma-separated."

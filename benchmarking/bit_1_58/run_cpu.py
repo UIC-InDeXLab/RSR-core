@@ -50,7 +50,7 @@ _LABEL_MAP = {
     "rsr_adaptive": "adaptive",
 }
 
-_CPU_MODULE_EXCLUDE = {"__init__", "base"}
+_CPU_MODULE_EXCLUDE = {"__init__", "base", "bitnet"}
 
 
 def _stem_to_label(stem: str) -> str:
