@@ -66,3 +66,10 @@ env/
 .key
 
 benchmarking/**/reports/
+
+out.log
+
+integrations/**/*.json
+integrations/**/*.safetensors
+
+.claude
