@@ -449,3 +449,7 @@ for each block b:
 | Unified ternary | 1 per block | 1 per block | 1 per block | 3^k |
 
 The unified approach halves the number of permutation and aggregation passes at the cost of a larger pattern space. For typical `k` values (4–8), `3^k` remains manageable (81–6561 patterns).
+
+### Non-Square Ternary Matrices
+
+The non-square generalization described in the "Extension to Non-Square Matrices" section applies identically to the ternary case. For a ternary matrix `M` of shape `(n_rows, n_cols)`, each block has `n_cols` columns encoded as `2k`-bit integers, permutations have `n_cols` entries per block, and the output has `n_rows` elements. Row padding to a multiple of `k` is applied if needed.
