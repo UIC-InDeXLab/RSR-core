@@ -193,6 +193,7 @@ def _load_rsr_cuda_module():
     global _RSR_CUDA_MODULE
     if _RSR_CUDA_MODULE is None:
         from multiplier.bit_1_58.cuda._jit_build import load_kernel
+
         _RSR_CUDA_MODULE = load_kernel("rsr_ternary_cuda_v6_3", "rsr_ternary_v6_3.cu")
     return _RSR_CUDA_MODULE
 
@@ -217,8 +218,12 @@ class _PreprocessedRSRCudaMultiplier:
 
         self._packed = tensors["packed"].to(dtype=torch.uint8, device=self.device)
         self._num_blocks = self.n_rows_padded // self.k
-        self._out = torch.empty(self.n_rows_padded, dtype=torch.float32, device=self.device)
-        self._v_i8_buf = torch.empty(self.n_cols_padded, dtype=torch.int8, device=self.device)
+        self._out = torch.empty(
+            self.n_rows_padded, dtype=torch.float32, device=self.device
+        )
+        self._v_i8_buf = torch.empty(
+            self.n_cols_padded, dtype=torch.int8, device=self.device
+        )
         self._inv_scale_buf = torch.empty(1, dtype=torch.float32, device=self.device)
 
     def __call__(self, vector: torch.Tensor) -> torch.Tensor:
@@ -244,7 +249,10 @@ class _PreprocessedRSRCudaMultiplier:
             self._v_i8_buf,
             self._inv_scale_buf,
             self._out,
-            self.n_cols_padded, self.k, self._num_blocks, self.k_dim,
+            self.n_cols_padded,
+            self.k,
+            self._num_blocks,
+            self.k_dim,
         )
         return self._out[: self.n_rows]
 
@@ -279,9 +287,13 @@ class RSRLinear(nn.Module):
         self._cuda_backend = backend == "cuda"
         self._weight_scale_mode = layer_meta.get("weight_scale_mode", "multiply")
         if self._cuda_backend:
-            self.multiplier = _PreprocessedRSRCudaMultiplier(layer_name, layer_meta, tensors)
+            self.multiplier = _PreprocessedRSRCudaMultiplier(
+                layer_name, layer_meta, tensors
+            )
         else:
-            self.multiplier = _PreprocessedRSRMultiplier(layer_name, layer_meta, tensors)
+            self.multiplier = _PreprocessedRSRMultiplier(
+                layer_name, layer_meta, tensors
+            )
         self.rms_norm = copy.deepcopy(rms_norm)
 
         if bias is None:
@@ -359,7 +371,9 @@ def _load_non_quantized_state(model_dir: Path) -> dict[str, torch.Tensor]:
 
 
 def _load_layer_tensors(
-    handle, layer_name: str, backend: str = "cpu",
+    handle,
+    layer_name: str,
+    backend: str = "cpu",
 ) -> dict[str, torch.Tensor]:
     prefix = f"{layer_name}."
     expected_keys = _RSR_CUDA_TENSOR_KEYS if backend == "cuda" else _RSR_TENSOR_KEYS
@@ -412,7 +426,9 @@ def _replace_ternary_layers(
                     "Re-run integrations/hf/model_prep.py to regenerate them."
                 )
             tensors = _load_layer_tensors(
-                handle, layer_name, backend=meta.get("backend", "cpu"),
+                handle,
+                layer_name,
+                backend=meta.get("backend", "cpu"),
             )
             replacement = RSRLinear(
                 layer_name,
@@ -556,10 +572,12 @@ def load_hf_model(
 
     if quantize == "8bit":
         from transformers import BitsAndBytesConfig
+
         load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
         load_kwargs["device_map"] = "auto"
     elif quantize == "4bit":
         from transformers import BitsAndBytesConfig
+
         load_kwargs["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_compute_dtype=torch.bfloat16,
@@ -716,6 +734,7 @@ def main(argv=None):
     if args.device is None:
         args.device = _detect_device_from_dir(args.model_dir)
         import warnings
+
         warnings.warn(
             f"--device not specified; auto-detected '{args.device}' "
             f"from model directory name '{Path(args.model_dir).name}'"

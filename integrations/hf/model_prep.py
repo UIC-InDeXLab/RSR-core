@@ -363,6 +363,27 @@ def save_preprocessed(
 # Main preprocessing pipeline
 # ---------------------------------------------------------------------------
 
+def _load_best_k_map(path: str | Path | None, device: str) -> dict[str, int]:
+    """Load a best-k JSON file and return a ``{\"NROWSxNCOLS\": k}`` mapping.
+
+    When *path* is ``None``, try the default location produced by
+    ``benchmarking.bit_1_58.bench_best_k``:
+    ``<project_root>/benchmarking/bit_1_58/reports/best_k_{device}.json``
+
+    Returns an empty dict if the file does not exist.
+    """
+    if path is None:
+        path = _PROJECT_ROOT / "benchmarking" / "bit_1_58" / "reports" / f"best_k_{device}.json"
+    else:
+        path = Path(path)
+
+    if not path.exists():
+        return {}
+
+    raw = json.loads(path.read_text())
+    return {shape_key: int(entry["k"]) for shape_key, entry in raw.items()}
+
+
 def preprocess_model(
     model_name_or_path: str,
     output_dir: str,
@@ -370,16 +391,25 @@ def preprocess_model(
     version: str = "adaptive",
     device: str = "cpu",
     trust_remote_code: bool = False,
+    best_k_json: str | Path | None = None,
 ):
     """Preprocess a HuggingFace quantized model for RSR inference.
 
     Args:
         model_name_or_path: HuggingFace model ID or local path.
         output_dir: Directory to write preprocessed model into.
-        k: Block height for RSR decomposition.
+        k: Block height for RSR decomposition (used as fallback when
+            *best_k_json* has no entry for a given layer shape).
         version: RSR version to use (default: adaptive).
         device: Device for model loading ("cpu" or "cuda").
         trust_remote_code: Whether to trust remote code when loading model.
+        best_k_json: Path to a JSON file mapping ``"NROWSxNCOLS"`` to the
+            best k for that shape.  Produced by
+            ``python -m benchmarking.bit_1_58.bench_best_k``.
+            When ``None`` (default) the standard location
+            ``benchmarking/bit_1_58/reports/best_k_{device}.json`` is tried
+            automatically; if the file does not exist, *k* is used for every
+            layer.
     """
     from transformers import AutoConfig, AutoModelForCausalLM
 
@@ -412,6 +442,14 @@ def preprocess_model(
         f"{len(non_quantized)} non-quantized tensors."
     )
 
+    # --- load per-shape best k (if available) --------------------------------
+    best_k_map = _load_best_k_map(best_k_json, device)
+    if best_k_map:
+        print(f"Loaded per-shape best-k map ({len(best_k_map)} entries). "
+              f"Fallback k={k}.")
+    else:
+        print(f"No best-k map found; using k={k} for all layers.")
+
     # --- preprocess --------------------------------------------------------
     rsr_data: dict[str, dict] = {}
     layer_meta: dict[str, dict] = {}
@@ -437,20 +475,22 @@ def preprocess_model(
             weight = w
 
         n_rows, n_cols = weight.shape
-        arrays = preprocess_fn(weight, k)
+        shape_key = f"{n_rows}x{n_cols}"
+        layer_k = best_k_map.get(shape_key, k)
+        arrays = preprocess_fn(weight, layer_k)
         rsr_data[name] = arrays
 
         meta = {
             "n_rows": n_rows,
             "n_cols": n_cols,
-            "k": k,
+            "k": layer_k,
             "backend": device,
             "weight_scale_mode": _detect_weight_scale_mode(module),
         }
         # CUDA adaptive: record effective_k and padded dimensions
         if device == "cuda":
             import math
-            effective_k = min(k, 12)
+            effective_k = min(layer_k, 12)
             col_align = math.lcm(4, 32)
             meta["effective_k"] = effective_k
             meta["n_rows_padded"] = (
@@ -522,6 +562,12 @@ def parse_args(argv=None):
         "--trust-remote-code", action="store_true",
         help="Trust remote code when loading model",
     )
+    parser.add_argument(
+        "--best-k-json", default=None,
+        help="Path to best-k JSON (NROWSxNCOLS -> k) produced by "
+             "benchmarking.bit_1_58.bench_best_k. "
+             "Default: benchmarking/bit_1_58/reports/best_k_{device}.json",
+    )
     return parser.parse_args(argv)
 
 
@@ -534,6 +580,7 @@ def main(argv=None):
         version=args.version,
         device=args.device,
         trust_remote_code=args.trust_remote_code,
+        best_k_json=args.best_k_json,
     )
 
 
