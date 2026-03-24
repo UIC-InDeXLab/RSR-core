@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import ctypes
 import json
 import sys
 from pathlib import Path
@@ -35,39 +34,19 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from multiplier.bit_1_58.cpu._rsr_v3_common import (  # noqa: E402
-    INT32_PTR,
-    UINT16_PTR,
-    ensure_cpu_float32_contiguous,
-    tensor_float_ptr,
+from multiplier.bit_1_58.cpu._rsr_v3_common import bitnet_act_quant  # noqa: E402
+from multiplier.bit_1_58.cpu.rsr_runtime import (  # noqa: E402
+    RSRBatchContext,
+    RSRBatchMultiplier,
+    RSRBatchMultiplierV31,
+    RSRPreprocessedMultiplier,
+    select_cpu_tensor_keys,
+    uses_v33,
 )
-
-_KERNEL_DIR = _PROJECT_ROOT / "kernels" / "bit_1_58" / "cpu"
-_RSR_V33_LIB = None
-_RSR_TENSOR_KEYS = ("perms", "group_ends", "pos_masks", "neg_masks", "block_meta")
-_RSR_CUDA_TENSOR_KEYS = ("perms", "group_packed", "block_meta")
-_RSR_CUDA_MODULE = None
-
-
-def _load_rsr_v33_lib():
-    global _RSR_V33_LIB
-    if _RSR_V33_LIB is None:
-        lib = ctypes.CDLL(str(_KERNEL_DIR / "rsr_ternary_v3_3.so"))
-        lib.rsr_ternary_gemv_v3_3.restype = None
-        lib.rsr_ternary_gemv_v3_3.argtypes = [
-            UINT16_PTR,
-            UINT16_PTR,
-            UINT16_PTR,
-            UINT16_PTR,
-            INT32_PTR,
-            ctypes.POINTER(ctypes.c_float),
-            ctypes.POINTER(ctypes.c_float),
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-        ]
-        _RSR_V33_LIB = lib
-    return _RSR_V33_LIB
+from multiplier.bit_1_58.cuda.rsr_runtime import (  # noqa: E402
+    CUDA_TENSOR_KEYS,
+    RSRPreprocessedCudaMultiplier,
+)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -117,160 +96,21 @@ def _set_module(root: nn.Module, dotted_name: str, module: nn.Module) -> None:
         setattr(parent, last, module)
 
 
-class _PreprocessedRSRMultiplier:
-    """GEMV runtime built directly from saved RSR tensors."""
-
-    def __init__(
-        self,
-        layer_name: str,
-        layer_meta: dict[str, Any],
-        tensors: dict[str, torch.Tensor],
-    ):
-        self.layer_name = layer_name
-        self.n_rows = int(layer_meta["n_rows"])
-        self.n_cols = int(layer_meta["n_cols"])
-        self.k = int(layer_meta["k"])
-
-        self._perms = self._to_uint16(tensors["perms"], "perms")
-        self._group_ends = self._to_uint16(tensors["group_ends"], "group_ends")
-        self._pos_masks = self._to_uint16(tensors["pos_masks"], "pos_masks")
-        self._neg_masks = self._to_uint16(tensors["neg_masks"], "neg_masks")
-        self._block_meta = self._to_int32(tensors["block_meta"], "block_meta")
-
-        if self._block_meta.size % 2 != 0:
-            raise ValueError(
-                f"Layer {layer_name!r} has invalid block_meta length {self._block_meta.size}"
-            )
-
-        self._num_blocks = self._block_meta.size // 2
-        self._perms_ptr = self._perms.ctypes.data_as(UINT16_PTR)
-        self._group_ends_ptr = self._group_ends.ctypes.data_as(UINT16_PTR)
-        self._pos_masks_ptr = self._pos_masks.ctypes.data_as(UINT16_PTR)
-        self._neg_masks_ptr = self._neg_masks.ctypes.data_as(UINT16_PTR)
-        self._block_meta_ptr = self._block_meta.ctypes.data_as(INT32_PTR)
-
-    @staticmethod
-    def _to_uint16(tensor: torch.Tensor, name: str) -> np.ndarray:
-        cpu = tensor.detach().to(device="cpu", dtype=torch.int32).contiguous()
-        if cpu.numel() and (
-            cpu.min().item() < 0 or cpu.max().item() > np.iinfo(np.uint16).max
-        ):
-            raise ValueError(f"Tensor {name!r} contains values outside uint16 range")
-        return cpu.numpy().astype(np.uint16, copy=True)
-
-    @staticmethod
-    def _to_int32(tensor: torch.Tensor, name: str) -> np.ndarray:
-        cpu = tensor.detach().to(device="cpu", dtype=torch.int32).contiguous()
-        if not cpu.is_contiguous():
-            raise ValueError(f"Tensor {name!r} must be contiguous")
-        return cpu.numpy().copy()
-
-    def __call__(self, vector: torch.Tensor) -> torch.Tensor:
-        if vector.ndim != 1 or vector.shape[0] != self.n_cols:
-            raise ValueError(
-                f"Layer {self.layer_name!r} expected vector of shape ({self.n_cols},), "
-                f"got {tuple(vector.shape)}"
-            )
-
-        v_cpu = ensure_cpu_float32_contiguous(vector)
-        out_cpu = torch.empty(self.n_rows, dtype=torch.float32)
-        _load_rsr_v33_lib().rsr_ternary_gemv_v3_3(
-            self._perms_ptr,
-            self._group_ends_ptr,
-            self._pos_masks_ptr,
-            self._neg_masks_ptr,
-            self._block_meta_ptr,
-            tensor_float_ptr(v_cpu),
-            tensor_float_ptr(out_cpu),
-            self.n_cols,
-            self.k,
-            self._num_blocks,
-        )
-        return out_cpu
-
-
-def _load_rsr_cuda_module():
-    global _RSR_CUDA_MODULE
-    if _RSR_CUDA_MODULE is None:
-        from multiplier.bit_1_58.cuda._jit_build import load_kernel
-
-        _RSR_CUDA_MODULE = load_kernel("rsr_ternary_cuda_v2_0", "rsr_ternary_v2_0.cu")
-    return _RSR_CUDA_MODULE
-
-
-class _PreprocessedRSRCudaMultiplier:
-    """CUDA GEMV runtime built from saved v2.0 compact metadata."""
-
-    def __init__(
-        self,
-        layer_name: str,
-        layer_meta: dict[str, Any],
-        tensors: dict[str, torch.Tensor],
-    ):
-        self.layer_name = layer_name
-        self.n_rows = int(layer_meta["n_rows"])
-        self.n_cols = int(layer_meta["n_cols"])
-        self.k = int(layer_meta["k"])
-        self.n_rows_padded = int(
-            layer_meta.get(
-                "n_rows_padded",
-                ((self.n_rows + self.k - 1) // self.k) * self.k,
-            )
-        )
-        self._num_blocks = int(
-            layer_meta.get("num_blocks", self.n_rows_padded // self.k)
-        )
-        self.device = torch.device("cuda")
-
-        self._perms = tensors["perms"].to(dtype=torch.uint16, device=self.device)
-        self._group_packed = tensors["group_packed"].to(
-            dtype=torch.int64,
-            device=self.device,
-        )
-        self._block_meta = tensors["block_meta"].to(
-            dtype=torch.int32,
-            device=self.device,
-        )
-        self._out = torch.empty(
-            self.n_rows_padded, dtype=torch.float32, device=self.device
-        )
-
-    def __call__(self, vector: torch.Tensor) -> torch.Tensor:
-        if vector.ndim != 1 or vector.shape[0] != self.n_cols:
-            raise ValueError(
-                f"Layer {self.layer_name!r} expected vector of shape ({self.n_cols},), "
-                f"got {tuple(vector.shape)}"
-            )
-
-        if vector.device != self.device or vector.dtype != torch.float32:
-            v_gpu = vector.to(self.device, dtype=torch.float32)
-        else:
-            v_gpu = vector
-
-        _load_rsr_cuda_module().rsr_ternary_gemv_v2_0(
-            self._perms,
-            self._group_packed,
-            self._block_meta,
-            v_gpu.contiguous(),
-            self._out,
-            self.n_cols,
-            self.k,
-            self._num_blocks,
-        )
-        return self._out[: self.n_rows]
-
-
-def _bitnet_act_quant(activation: torch.Tensor) -> torch.Tensor:
-    """Match transformers.integrations.bitnet.ActQuant for offline BitNet."""
-    dtype = activation.dtype
-    activation = activation.float()
-    scale = 127 / activation.abs().max(dim=-1, keepdim=True).values.clamp_(min=1e-5)
-    activation = (activation * scale).round().clamp(-128, 127) / scale
-    return activation.to(dtype)
-
-
 class RSRLinear(nn.Module):
-    """BitNet-aware replacement for a ternary linear layer."""
+    """BitNet-aware replacement for a ternary linear layer.
+
+    Supports three CPU execution modes (selected automatically):
+
+    * **batch** — when a :class:`RSRBatchContext` is attached, the batch
+      kernel runs act_quant once and computes all grouped layers in a
+      single C call.
+    * **fused** — single-layer fused act_quant + GEMV (one C call instead
+      of Python act_quant + C GEMV).
+    * **legacy** — original path (Python act_quant then C GEMV).  Used only
+      when the fused/batch kernel is unavailable.
+
+    CUDA layers always use the existing CUDA kernel (unchanged).
+    """
 
     def __init__(
         self,
@@ -290,14 +130,21 @@ class RSRLinear(nn.Module):
         self._cuda_backend = backend == "cuda"
         self._weight_scale_mode = layer_meta.get("weight_scale_mode", "multiply")
         if self._cuda_backend:
-            self.multiplier = _PreprocessedRSRCudaMultiplier(
+            self.multiplier = RSRPreprocessedCudaMultiplier(
                 layer_name, layer_meta, tensors
             )
         else:
-            self.multiplier = _PreprocessedRSRMultiplier(
+            self.multiplier = RSRPreprocessedMultiplier(
                 layer_name, layer_meta, tensors
             )
         self.rms_norm = copy.deepcopy(rms_norm)
+
+        # Batch context (set later by _replace_ternary_layers if this layer
+        # belongs to a group that shares the same input).
+        self._batch_ctx: RSRBatchContext | None = None
+
+        # Scratch buffer for fused single-layer path (allocated lazily).
+        self._v_scratch: np.ndarray | None = None
 
         if bias is None:
             self.register_buffer("bias", None, persistent=False)
@@ -313,6 +160,11 @@ class RSRLinear(nn.Module):
                 persistent=True,
             )
 
+    def _ensure_scratch(self) -> np.ndarray:
+        if self._v_scratch is None:
+            self._v_scratch = np.empty(self.in_features, dtype=np.float32)
+        return self._v_scratch
+
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         if inputs.shape[-1] != self.in_features:
             raise ValueError(
@@ -323,24 +175,49 @@ class RSRLinear(nn.Module):
         if self.rms_norm is not None:
             inputs = self.rms_norm(inputs)
 
-        # The CUDA kernel has its own int8 quantization fused in, so applying
-        # _bitnet_act_quant first would double-quantize (quantize → dequantize
-        # → re-quantize), introducing rounding errors that compound across
-        # hundreds of layers.  The CPU kernel works with float32 directly, so
-        # it needs the fake-quantized (dequantized) values from act_quant.
-        if not self._cuda_backend:
-            inputs = _bitnet_act_quant(inputs)
-        else:
+        if self._cuda_backend:
+            # CUDA path: unchanged — the kernel does its own quantization.
             inputs = inputs.float()
-        flat_inputs = inputs.reshape(-1, self.in_features)
-        out_device = getattr(self.multiplier, "device", torch.device("cpu"))
-        flat_outputs = torch.empty(
-            (flat_inputs.shape[0], self.out_features),
-            dtype=torch.float32,
-            device=out_device,
-        )
-        for idx in range(flat_inputs.shape[0]):
-            flat_outputs[idx] = self.multiplier(flat_inputs[idx])
+            flat_inputs = inputs.reshape(-1, self.in_features)
+            out_device = self.multiplier.device
+            flat_outputs = torch.empty(
+                (flat_inputs.shape[0], self.out_features),
+                dtype=torch.float32,
+                device=out_device,
+            )
+            for idx in range(flat_inputs.shape[0]):
+                flat_outputs[idx] = self.multiplier(flat_inputs[idx])
+
+        elif self._batch_ctx is not None and inputs.shape[:-1].numel() == 1:
+            # Batch path: act_quant is fused inside the C batch kernel.
+            # Only used for single-token (autoregressive decode).  Multi-token
+            # inputs (prefill) fall through to the fused single-layer path
+            # because RSRBatchContext counts calls across layers — feeding it
+            # multiple tokens from the same layer corrupts its cache counter.
+            flat_inputs = inputs.float().reshape(-1, self.in_features)
+            flat_outputs = torch.empty(
+                (flat_inputs.shape[0], self.out_features),
+                dtype=torch.float32,
+            )
+            for idx in range(flat_inputs.shape[0]):
+                flat_outputs[idx] = self._batch_ctx.get_output(
+                    self.layer_name, flat_inputs[idx],
+                )
+            out_device = torch.device("cpu")
+
+        else:
+            # Fused single-layer path: act_quant + GEMV in one C call (v3.3 and v3.1).
+            flat_inputs = inputs.float().reshape(-1, self.in_features)
+            scratch = self._ensure_scratch()
+            flat_outputs = torch.empty(
+                (flat_inputs.shape[0], self.out_features),
+                dtype=torch.float32,
+            )
+            for idx in range(flat_inputs.shape[0]):
+                flat_outputs[idx] = self.multiplier.fused_call(
+                    flat_inputs[idx], scratch,
+                )
+            out_device = torch.device("cpu")
 
         output = flat_outputs.reshape(*inputs.shape[:-1], self.out_features)
 
@@ -376,10 +253,16 @@ def _load_non_quantized_state(model_dir: Path) -> dict[str, torch.Tensor]:
 def _load_layer_tensors(
     handle,
     layer_name: str,
+    layer_meta: dict[str, Any],
     backend: str = "cpu",
 ) -> dict[str, torch.Tensor]:
     prefix = f"{layer_name}."
-    expected_keys = _RSR_CUDA_TENSOR_KEYS if backend == "cuda" else _RSR_TENSOR_KEYS
+    if backend == "cuda":
+        expected_keys = CUDA_TENSOR_KEYS
+    else:
+        n_cols = int(layer_meta["n_cols"])
+        k = int(layer_meta["k"])
+        expected_keys = select_cpu_tensor_keys(n_cols, k)
     tensors = {}
     keys = set(handle.keys())
     if backend == "cuda" and prefix + "packed" in keys:
@@ -404,6 +287,48 @@ def _build_base_model(model_dir: Path) -> nn.Module:
     return model
 
 
+def _group_layers_for_batching(
+    layer_meta: dict[str, Any],
+) -> tuple[dict[str, list[str]], set[str]]:
+    """Identify CPU layers that share the same input and can be batched.
+
+    Returns ``(groups, grouped_names)`` where *groups* maps a group key to an
+    ordered list of layer names and *grouped_names* is the flat set of all
+    layer names that belong to some group.
+
+    Grouping rules (transformer-specific):
+      * ``self_attn.{q,k,v}_proj`` share *hidden_states*.
+      * ``mlp.{gate,up}_proj``     share the post-attention hidden state.
+      * Only CPU-backend layers are grouped (CUDA has its own pipeline).
+    """
+    _QKV = {"q_proj", "k_proj", "v_proj"}
+    _GATE_UP = {"gate_proj", "up_proj"}
+
+    groups: dict[str, list[str]] = {}
+    grouped_names: set[str] = set()
+
+    for layer_name, meta in layer_meta.items():
+        if meta.get("backend", "cpu") != "cpu":
+            continue
+        parts = layer_name.rsplit(".", 1)
+        if len(parts) != 2:
+            continue
+        prefix, suffix = parts
+        if suffix in _QKV:
+            key = prefix + "._batch_qkv"
+        elif suffix in _GATE_UP:
+            key = prefix + "._batch_gate_up"
+        else:
+            continue
+        groups.setdefault(key, []).append(layer_name)
+        grouped_names.add(layer_name)
+
+    # Drop incomplete groups (need >= 2 layers to benefit from batching).
+    groups = {k: v for k, v in groups.items() if len(v) >= 2}
+    grouped_names = {n for names in groups.values() for n in names}
+    return groups, grouped_names
+
+
 def _replace_ternary_layers(
     model: nn.Module,
     model_dir: Path,
@@ -414,6 +339,12 @@ def _replace_ternary_layers(
 ) -> None:
     aux_state = aux_state or {}
     rsr_path = model_dir / "rsr_weights.safetensors"
+
+    groups, grouped_names = _group_layers_for_batching(layer_meta)
+
+    # First pass: create all RSRLinear replacements.
+    replacements: dict[str, RSRLinear] = {}
+
     with safe_open(rsr_path, framework="pt", device="cpu") as handle:
         for layer_name, meta in layer_meta.items():
             original = _resolve_module(model, layer_name)
@@ -437,6 +368,7 @@ def _replace_ternary_layers(
             tensors = _load_layer_tensors(
                 handle,
                 layer_name,
+                layer_meta=meta,
                 backend=meta.get("backend", "cpu"),
             )
             replacement = RSRLinear(
@@ -447,7 +379,23 @@ def _replace_ternary_layers(
                 weight_scale=layer_aux.get("weight_scale"),
             )
             replacement.train(original.training)
-            _set_module(model, layer_name, replacement)
+            replacements[layer_name] = replacement
+
+    # Second pass: wire up batch contexts for grouped CPU layers.
+    for _group_key, names in groups.items():
+        mults = [replacements[n].multiplier for n in names]
+        # Pick v3.3 or v3.1 batch multiplier based on first layer's kernel.
+        if mults[0]._use_v33:
+            batch_mult = RSRBatchMultiplier(mults)
+        else:
+            batch_mult = RSRBatchMultiplierV31(mults)
+        ctx = RSRBatchContext(batch_mult, names)
+        for name in names:
+            replacements[name]._batch_ctx = ctx
+
+    # Install all replacements into the model.
+    for layer_name, replacement in replacements.items():
+        _set_module(model, layer_name, replacement)
 
 
 def _materialize_meta_buffers(model: nn.Module) -> None:

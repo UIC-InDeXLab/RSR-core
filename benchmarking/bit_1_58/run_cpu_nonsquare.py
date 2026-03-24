@@ -19,8 +19,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from multiplier.bit_1_58.pytorch import PytorchMultiplier
-from multiplier.bit_1_58.cpu.rsr_v3_3_nonsquare import RSRTernaryV3_3NonSquareMultiplier
+from multiplier.bit_1_58.pytorch import PytorchBF16Multiplier
+from multiplier.bit_1_58.cpu.rsr_nonsquare import RSRTernaryNonSquareMultiplier
 
 
 def bench_inference(multiplier, v, warmup=5, repeats=20):
@@ -49,15 +49,21 @@ def random_ternary(n_rows, n_cols):
 def main():
     # Non-square shapes: (n_rows, n_cols) — representative of neural network layers
     shapes = [
+        # BitNet-b1.58-2B-4T
+        (640, 2560),
+        (2560, 2560),
+        (2560, 6912),
+        (6912, 2560),
+        # Llama3-8B-1.58-100B-tokens
         (1024, 4096),
-        (4096, 1024),
-        (2048, 2048),
         (4096, 4096),
-        (4096, 11008),
-        (11008, 4096),
-        (8192, 8192),
         (4096, 14336),
         (14336, 4096),
+        # Falcon3-10B-Instruct-1.58bit
+        (1024, 3072),
+        (3072, 3072),
+        (3072, 23040),
+        (23040, 3072),
     ]
     k_values = [4, 8, 12]
     repeats = 20
@@ -83,7 +89,7 @@ def main():
 
         # Pytorch baseline (same for all k)
         try:
-            m_pt = PytorchMultiplier(M)
+            m_pt = PytorchBF16Multiplier(M)
             t_pytorch = bench_inference(m_pt, v, warmup=warmup, repeats=repeats)
         except Exception as e:
             print(f"  [error pytorch: {e}]")
@@ -96,7 +102,7 @@ def main():
 
         for k in k_values:
             try:
-                m_rsr = RSRTernaryV3_3NonSquareMultiplier(M, k)
+                m_rsr = RSRTernaryNonSquareMultiplier(M, k)
                 t_rsr = bench_inference(m_rsr, v, warmup=warmup, repeats=repeats)
             except Exception as e:
                 print(f"  [error rsr_ternary_nonsquare k={k}: {e}]")

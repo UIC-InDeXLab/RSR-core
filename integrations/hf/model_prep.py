@@ -187,31 +187,51 @@ def get_non_quantized_params(model, ternary_layer_names: set) -> dict:
 def preprocess_layer_cpu(weight: torch.Tensor, k: int) -> dict:
     """Apply CPU RSR preprocessing to a single ternary weight matrix.
 
-    Uses the non-square v3.3 multiplier (supports any n_rows x n_cols).
+    Uses the non-square multiplier which automatically selects v3.3 or v3.1
+    based on n_cols (threshold at 4096).
 
     Args:
         weight: int8 ternary matrix of shape (n_rows, n_cols), values in {-1, 0, +1}
         k: block height for RSR decomposition
 
     Returns:
-        Dict of preprocessed int32 tensors: perms, group_ends, pos_masks,
-        neg_masks, block_meta.
+        Dict of preprocessed int32 tensors. For v3.3: perms, group_ends,
+        pos_masks, neg_masks, block_meta. For v3.1: perms, group_ends,
+        scatter_offsets, scatter_rows, scatter_signs, block_meta.
     """
     import numpy as np
-    from multiplier.bit_1_58.cpu.rsr_v3_3_nonsquare import (
-        RSRTernaryV3_3NonSquareMultiplier,
+    from multiplier.bit_1_58.cpu.rsr_nonsquare import (
+        RSRTernaryNonSquareMultiplier,
     )
 
     M = weight.to(torch.float32).cpu()
-    mult = RSRTernaryV3_3NonSquareMultiplier(M, k)
+    mult = RSRTernaryNonSquareMultiplier(M, k)
 
-    return {
+    result = {
         "perms": torch.from_numpy(mult._perms_u16.astype(np.int32).copy()),
         "group_ends": torch.from_numpy(mult._group_ends_u16.astype(np.int32).copy()),
-        "pos_masks": torch.from_numpy(mult._pos_masks.astype(np.int32).copy()),
-        "neg_masks": torch.from_numpy(mult._neg_masks.astype(np.int32).copy()),
         "block_meta": torch.from_numpy(mult._block_meta.copy()),
     }
+
+    if mult._use_v33:
+        result["pos_masks"] = torch.from_numpy(
+            mult._pos_masks.astype(np.int32).copy()
+        )
+        result["neg_masks"] = torch.from_numpy(
+            mult._neg_masks.astype(np.int32).copy()
+        )
+    else:
+        result["scatter_offsets"] = torch.from_numpy(
+            mult._scatter_offsets.copy()
+        )
+        result["scatter_rows"] = torch.from_numpy(
+            mult._scatter_rows.astype(np.int32).copy()
+        )
+        result["scatter_signs"] = torch.from_numpy(
+            mult._scatter_signs.astype(np.int32).copy()
+        )
+
+    return result
 
 
 def preprocess_layer_cuda(weight: torch.Tensor, k: int) -> dict:

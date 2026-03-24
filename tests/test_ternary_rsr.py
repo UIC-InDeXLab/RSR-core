@@ -4,18 +4,10 @@ import torch
 import pytest
 
 from multiplier.bit_1_58.pytorch import PytorchMultiplier
-from multiplier.bit_1_58.cpu.rsr_v1_2 import RSRTernaryV1_2Multiplier
-from multiplier.bit_1_58.cpu.rsr_v1_3 import RSRTernaryV1_3Multiplier
 from multiplier.bit_1_58.cpu.rsr_v1_4 import RSRTernaryV1_4Multiplier
-from multiplier.bit_1_58.cpu.rsr_v1_5 import RSRTernaryV1_5Multiplier
-from multiplier.bit_1_58.cpu.rsr_v1_6 import RSRTernaryV1_6Multiplier
-from multiplier.bit_1_58.cpu.rsr_v2_0 import RSRTernaryV2_0Multiplier
-from multiplier.bit_1_58.cpu.rsr_v2_1 import RSRTernaryV2_1Multiplier
-from multiplier.bit_1_58.cpu.rsr_v3_0 import RSRTernaryV3_0Multiplier
 from multiplier.bit_1_58.cpu.rsr_v3_1 import RSRTernaryV3_1Multiplier
-from multiplier.bit_1_58.cpu.rsr_v3_2 import RSRTernaryV3_2Multiplier
 from multiplier.bit_1_58.cpu.rsr_v3_3 import RSRTernaryV3_3Multiplier
-from multiplier.bit_1_58.cpu.rsr_adaptive import RSRTernaryAdaptiveMultiplier
+from multiplier.bit_1_58.cpu.rsr_nonsquare import RSRTernaryNonSquareMultiplier
 from multiplier.bit_1_58.cpu.bitnet import BitNetTernaryMultiplier
 from multiplier.bit_1_58.cpu.tmac import TMACTernaryMultiplier
 
@@ -30,79 +22,15 @@ def k(request):
     return request.param
 
 
-def random_ternary_matrix(n):
+def random_ternary_matrix(n, m=None):
     """Generate a random ternary matrix with values in {-1, 0, +1}."""
-    return torch.randint(-1, 2, (n, n), dtype=torch.float32)
+    if m is None:
+        m = n
+    return torch.randint(-1, 2, (n, m), dtype=torch.float32)
 
 
 def random_vector(n):
     return torch.randn(n, dtype=torch.float32)
-
-
-# ---------------------------------------------------------------------------
-# v1.2 — single ternary encoding (2k-bit)
-# ---------------------------------------------------------------------------
-
-class TestTernaryRSRV1_2:
-    def test_random(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = random_ternary_matrix(n)
-        v = random_vector(n)
-        expected = PytorchMultiplier(M)(v)
-        actual = RSRTernaryV1_2Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, expected)
-
-    def test_neg_identity(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = -torch.eye(n, dtype=torch.float32)
-        v = random_vector(n)
-        actual = RSRTernaryV1_2Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, -v)
-
-    def test_multiple_vectors(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = random_ternary_matrix(n)
-        rsr = RSRTernaryV1_2Multiplier(M, k)
-        pytorch = PytorchMultiplier(M)
-        for _ in range(5):
-            v = random_vector(n)
-            torch.testing.assert_close(rsr(v), pytorch(v))
-
-
-# ---------------------------------------------------------------------------
-# v1.3 — batched across blocks
-# ---------------------------------------------------------------------------
-
-class TestTernaryRSRV1_3:
-    def test_random(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = random_ternary_matrix(n)
-        v = random_vector(n)
-        expected = PytorchMultiplier(M)(v)
-        actual = RSRTernaryV1_3Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, expected)
-
-    def test_neg_identity(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = -torch.eye(n, dtype=torch.float32)
-        v = random_vector(n)
-        actual = RSRTernaryV1_3Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, -v)
-
-    def test_multiple_vectors(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = random_ternary_matrix(n)
-        rsr = RSRTernaryV1_3Multiplier(M, k)
-        pytorch = PytorchMultiplier(M)
-        for _ in range(5):
-            v = random_vector(n)
-            torch.testing.assert_close(rsr(v), pytorch(v))
 
 
 # ---------------------------------------------------------------------------
@@ -147,203 +75,6 @@ class TestTernaryRSRV1_4:
 
 
 # ---------------------------------------------------------------------------
-# v1.5 — C kernel with AVX2
-# ---------------------------------------------------------------------------
-
-class TestTernaryRSRV1_5:
-    def test_random(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = random_ternary_matrix(n)
-        v = random_vector(n)
-        expected = PytorchMultiplier(M)(v)
-        actual = RSRTernaryV1_5Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, expected)
-
-    def test_neg_identity(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = -torch.eye(n, dtype=torch.float32)
-        v = random_vector(n)
-        actual = RSRTernaryV1_5Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, -v)
-
-    def test_all_zeros(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = torch.zeros(n, n, dtype=torch.float32)
-        v = random_vector(n)
-        actual = RSRTernaryV1_5Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, torch.zeros(n))
-
-    def test_multiple_vectors(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = random_ternary_matrix(n)
-        rsr = RSRTernaryV1_5Multiplier(M, k)
-        pytorch = PytorchMultiplier(M)
-        for _ in range(5):
-            v = random_vector(n)
-            torch.testing.assert_close(rsr(v), pytorch(v))
-
-
-# ---------------------------------------------------------------------------
-# v1.6 — C kernel with AVX2, two-pass permute + linear scan
-# ---------------------------------------------------------------------------
-
-class TestTernaryRSRV1_6:
-    def test_random(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = random_ternary_matrix(n)
-        v = random_vector(n)
-        expected = PytorchMultiplier(M)(v)
-        actual = RSRTernaryV1_6Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, expected)
-
-    def test_neg_identity(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = -torch.eye(n, dtype=torch.float32)
-        v = random_vector(n)
-        actual = RSRTernaryV1_6Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, -v)
-
-    def test_all_zeros(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = torch.zeros(n, n, dtype=torch.float32)
-        v = random_vector(n)
-        actual = RSRTernaryV1_6Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, torch.zeros(n))
-
-    def test_multiple_vectors(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = random_ternary_matrix(n)
-        rsr = RSRTernaryV1_6Multiplier(M, k)
-        pytorch = PytorchMultiplier(M)
-        for _ in range(5):
-            v = random_vector(n)
-            torch.testing.assert_close(rsr(v), pytorch(v))
-
-
-# ---------------------------------------------------------------------------
-# v2.0 — direct scalar gather with static scheduling
-# ---------------------------------------------------------------------------
-
-class TestTernaryRSRV2_0:
-    def test_random(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = random_ternary_matrix(n)
-        v = random_vector(n)
-        expected = PytorchMultiplier(M)(v)
-        actual = RSRTernaryV2_0Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, expected)
-
-    def test_neg_identity(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = -torch.eye(n, dtype=torch.float32)
-        v = random_vector(n)
-        actual = RSRTernaryV2_0Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, -v)
-
-    def test_all_zeros(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = torch.zeros(n, n, dtype=torch.float32)
-        v = random_vector(n)
-        actual = RSRTernaryV2_0Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, torch.zeros(n))
-
-    def test_multiple_vectors(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = random_ternary_matrix(n)
-        rsr = RSRTernaryV2_0Multiplier(M, k)
-        pytorch = PytorchMultiplier(M)
-        for _ in range(5):
-            v = random_vector(n)
-            torch.testing.assert_close(rsr(v), pytorch(v))
-
-
-# ---------------------------------------------------------------------------
-# v2.1 — optimized two-pass gather plus static scheduling
-# ---------------------------------------------------------------------------
-
-class TestTernaryRSRV2_1:
-    def test_random(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = random_ternary_matrix(n)
-        v = random_vector(n)
-        expected = PytorchMultiplier(M)(v)
-        actual = RSRTernaryV2_1Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, expected)
-
-    def test_neg_identity(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = -torch.eye(n, dtype=torch.float32)
-        v = random_vector(n)
-        actual = RSRTernaryV2_1Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, -v)
-
-    def test_all_zeros(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = torch.zeros(n, n, dtype=torch.float32)
-        v = random_vector(n)
-        actual = RSRTernaryV2_1Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, torch.zeros(n))
-
-    def test_multiple_vectors(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = random_ternary_matrix(n)
-        rsr = RSRTernaryV2_1Multiplier(M, k)
-        pytorch = PytorchMultiplier(M)
-        for _ in range(5):
-            v = random_vector(n)
-            torch.testing.assert_close(rsr(v), pytorch(v))
-
-
-# ---------------------------------------------------------------------------
-# v3.0 — persistent scratch two-pass kernel
-# ---------------------------------------------------------------------------
-
-class TestTernaryRSRV3_0:
-    def test_random(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = random_ternary_matrix(n)
-        v = random_vector(n)
-        expected = PytorchMultiplier(M)(v)
-        actual = RSRTernaryV3_0Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, expected)
-
-    def test_neg_identity(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = -torch.eye(n, dtype=torch.float32)
-        v = random_vector(n)
-        actual = RSRTernaryV3_0Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, -v)
-
-    def test_multiple_vectors(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = random_ternary_matrix(n)
-        rsr = RSRTernaryV3_0Multiplier(M, k)
-        pytorch = PytorchMultiplier(M)
-        for _ in range(5):
-            v = random_vector(n)
-            torch.testing.assert_close(rsr(v), pytorch(v))
-
-
-# ---------------------------------------------------------------------------
 # v3.1 — direct kernel with 16-bit metadata
 # ---------------------------------------------------------------------------
 
@@ -370,39 +101,6 @@ class TestTernaryRSRV3_1:
             pytest.skip(f"n={n} not divisible by k={k}")
         M = random_ternary_matrix(n)
         rsr = RSRTernaryV3_1Multiplier(M, k)
-        pytorch = PytorchMultiplier(M)
-        for _ in range(5):
-            v = random_vector(n)
-            torch.testing.assert_close(rsr(v), pytorch(v))
-
-
-# ---------------------------------------------------------------------------
-# v3.2 — runtime hybrid between v3.0 and v3.1
-# ---------------------------------------------------------------------------
-
-class TestTernaryRSRV3_2:
-    def test_random(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = random_ternary_matrix(n)
-        v = random_vector(n)
-        expected = PytorchMultiplier(M)(v)
-        actual = RSRTernaryV3_2Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, expected)
-
-    def test_neg_identity(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = -torch.eye(n, dtype=torch.float32)
-        v = random_vector(n)
-        actual = RSRTernaryV3_2Multiplier(M, k)(v)
-        torch.testing.assert_close(actual, -v)
-
-    def test_multiple_vectors(self, n, k):
-        if n % k != 0:
-            pytest.skip(f"n={n} not divisible by k={k}")
-        M = random_ternary_matrix(n)
-        rsr = RSRTernaryV3_2Multiplier(M, k)
         pytorch = PytorchMultiplier(M)
         for _ in range(5):
             v = random_vector(n)
@@ -443,26 +141,37 @@ class TestTernaryRSRV3_3:
 
 
 # ---------------------------------------------------------------------------
-# Adaptive — any k via zero-padding
+# Non-square — unified multiplier with v3.1/v3.3 switching
 # ---------------------------------------------------------------------------
 
-class TestTernaryRSRAdaptive:
-    @pytest.mark.parametrize("n,k", [(15, 4), (17, 6), (31, 8), (32, 8), (33, 12)])
-    def test_random(self, n, k):
+class TestTernaryRSRNonSquare:
+    @pytest.mark.parametrize("n_rows,n_cols,k", [
+        (16, 32, 2), (32, 16, 4), (64, 64, 8),
+        (15, 32, 4), (33, 64, 8),  # padding cases
+    ])
+    def test_nonsquare_random(self, n_rows, n_cols, k):
+        M = random_ternary_matrix(n_rows, n_cols)
+        v = random_vector(n_cols)
+        expected = M @ v
+        actual = RSRTernaryNonSquareMultiplier(M, k)(v)
+        torch.testing.assert_close(actual, expected)
+
+    def test_square(self, n, k):
+        if n % k != 0:
+            pytest.skip(f"n={n} not divisible by k={k}")
         M = random_ternary_matrix(n)
         v = random_vector(n)
         expected = PytorchMultiplier(M)(v)
-        actual = RSRTernaryAdaptiveMultiplier(M, k)(v)
+        actual = RSRTernaryNonSquareMultiplier(M, k)(v)
         torch.testing.assert_close(actual, expected)
 
-    @pytest.mark.parametrize("n,k", [(15, 4), (17, 6), (33, 12)])
-    def test_multiple_vectors(self, n, k):
-        M = random_ternary_matrix(n)
-        rsr = RSRTernaryAdaptiveMultiplier(M, k)
-        pytorch = PytorchMultiplier(M)
-        for _ in range(5):
-            v = random_vector(n)
-            torch.testing.assert_close(rsr(v), pytorch(v))
+    def test_neg_identity(self, n, k):
+        if n % k != 0:
+            pytest.skip(f"n={n} not divisible by k={k}")
+        M = -torch.eye(n, dtype=torch.float32)
+        v = random_vector(n)
+        actual = RSRTernaryNonSquareMultiplier(M, k)(v)
+        torch.testing.assert_close(actual, -v)
 
 
 # ---------------------------------------------------------------------------

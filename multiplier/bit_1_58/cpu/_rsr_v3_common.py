@@ -25,3 +25,12 @@ def ensure_cpu_float32_contiguous(v: torch.Tensor) -> torch.Tensor:
 
 def tensor_float_ptr(t: torch.Tensor):
     return ctypes.cast(t.data_ptr(), FLOAT_PTR)
+
+
+def bitnet_act_quant(activation: torch.Tensor) -> torch.Tensor:
+    """Match transformers.integrations.bitnet.ActQuant for offline BitNet."""
+    dtype = activation.dtype
+    activation = activation.float()
+    scale = 127 / activation.abs().max(dim=-1, keepdim=True).values.clamp_(min=1e-5)
+    activation = (activation * scale).round().clamp(-128, 127) / scale
+    return activation.to(dtype)

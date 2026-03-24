@@ -74,8 +74,8 @@ def bench_inference(fn, warmup=5, repeats=20):
 
 
 def bench_cpu(shapes, k_values, warmup, repeats):
-    from multiplier.bit_1_58.cpu.rsr_v3_3_nonsquare import (
-        RSRTernaryV3_3NonSquareMultiplier,
+    from multiplier.bit_1_58.cpu.rsr_nonsquare import (
+        RSRTernaryNonSquareMultiplier,
     )
 
     rows = []
@@ -105,7 +105,7 @@ def bench_cpu(shapes, k_values, warmup, repeats):
         best_k, best_t = None, float("inf")
         for k in k_values:
             try:
-                rsr = RSRTernaryV3_3NonSquareMultiplier(M, k)
+                rsr = RSRTernaryNonSquareMultiplier(M, k)
                 t_rsr = bench_inference(
                     lambda: rsr(v),
                     warmup=warmup,
