@@ -247,7 +247,7 @@ class TestPreprocessLayerCpu:
 # ---------------------------------------------------------------------------
 
 class TestPreprocessLayerCuda:
-    EXPECTED_KEYS = {"packed"}
+    EXPECTED_KEYS = {"perms", "group_packed", "block_meta"}
 
     @pytest.mark.parametrize(
         "n_rows,n_cols", [(16, 32), (32, 16), (64, 64), (24, 48)]
@@ -257,36 +257,32 @@ class TestPreprocessLayerCuda:
         result = preprocess_layer_cuda(w, k=8)
         assert set(result.keys()) == self.EXPECTED_KEYS
 
-    def test_packed_dtype_uint8(self):
+    def test_perms_dtype_uint16(self):
         w = torch.randint(-1, 2, (32, 64), dtype=torch.int8)
         result = preprocess_layer_cuda(w, k=8)
-        assert result["packed"].dtype == torch.uint8
+        assert result["perms"].dtype == torch.uint16
 
-    def test_effective_k_clamped(self):
-        """k > 12 should be clamped to 12."""
-        w = torch.randint(-1, 2, (24, 64), dtype=torch.int8)
-        result = preprocess_layer_cuda(w, k=16)
-        # n_rows_padded = ceil(24/12)*12 = 24, packed rows = 24, cols_packed = 64//4 = 16
-        assert result["packed"].shape[0] == 24
-        assert result["packed"].shape[1] == 64 // 4
+    def test_group_packed_dtype_int64(self):
+        w = torch.randint(-1, 2, (32, 64), dtype=torch.int8)
+        result = preprocess_layer_cuda(w, k=8)
+        assert result["group_packed"].dtype == torch.int64
 
     @pytest.mark.parametrize("k", [4, 6, 8, 12])
     def test_different_k(self, k):
         w = torch.randint(-1, 2, (24, 64), dtype=torch.int8)
         result = preprocess_layer_cuda(w, k=k)
-        assert "packed" in result
+        assert "group_packed" in result
 
     def test_non_square(self):
         w = torch.randint(-1, 2, (1024, 4096), dtype=torch.int8)
         result = preprocess_layer_cuda(w, k=8)
-        assert result["packed"].shape == (1024, 4096 // 4)
+        assert result["perms"].shape == ((1024 // 8) * 4096,)
+        assert result["block_meta"].shape == (2 * (1024 // 8),)
 
-    def test_padding_cols_to_32(self):
-        """Columns not divisible by 32 should be padded."""
+    def test_no_column_padding(self):
         w = torch.randint(-1, 2, (16, 20), dtype=torch.int8)
         result = preprocess_layer_cuda(w, k=8)
-        # 20 -> padded to 32, packed = 32 // 4 = 8
-        assert result["packed"].shape[1] == 8
+        assert result["perms"].shape == ((16 // 8) * 20,)
 
 
 # ---------------------------------------------------------------------------

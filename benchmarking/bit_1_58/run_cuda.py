@@ -102,27 +102,12 @@ def load_all_versions():
     except Exception as e:
         print(f"  [skip bitblas: {e}]")
 
-    # --- Retained fast RSR ternary CUDA versions (need k) ---
+    # --- Retained RSR ternary CUDA version (needs k) ---
     rsr_versions = [
         (
-            "cuda_v6.3",
-            "multiplier.bit_1_58.cuda.rsr_cuda_v6_3",
-            "RSRTernaryCudaV6_3Multiplier",
-        ),
-        (
-            "cuda_v6.5",
-            "multiplier.bit_1_58.cuda.rsr_cuda_v6_5",
-            "RSRTernaryCudaV6_5Multiplier",
-        ),
-        (
-            "cuda_v10.1",
-            "multiplier.bit_1_58.cuda.rsr_cuda_v10_1",
-            "RSRTernaryCudaV10_1Multiplier",
-        ),
-        (
-            "cuda_adaptive",
-            "multiplier.bit_1_58.cuda.rsr_cuda_adaptive",
-            "RSRTernaryCudaAdaptiveMultiplier",
+            "cuda_v2.0",
+            "multiplier.bit_1_58.cuda.rsr_cuda_v2_0",
+            "RSRTernaryCudaV2_0Multiplier",
         ),
     ]
 
@@ -197,33 +182,16 @@ def main():
         print("  " + "-" * (len(t_header) - 2))
 
         for k in k_values:
-            if n % k == 0:
-                rsr_times = []
-                for lbl, cls in rsr_versions:
-                    try:
-                        m = cls(M, k)
-                        rsr_times.append(
-                            bench_inference_cuda(m, v, warmup=warmup, repeats=repeats)
-                        )
-                    except Exception as e:
-                        print(f"  [error {lbl} n={n} k={k}: {e}]")
-                        rsr_times.append(float("nan"))
-            else:
-                rsr_times = []
-                for lbl, cls in rsr_versions:
-                    if "adaptive" in lbl:
-                        try:
-                            m = cls(M, k)
-                            rsr_times.append(
-                                bench_inference_cuda(
-                                    m, v, warmup=warmup, repeats=repeats
-                                )
-                            )
-                        except Exception as e:
-                            print(f"  [error {lbl} n={n} k={k}: {e}]")
-                            rsr_times.append(float("nan"))
-                    else:
-                        rsr_times.append(float("nan"))
+            rsr_times = []
+            for lbl, cls in rsr_versions:
+                try:
+                    m = cls(M, k)
+                    rsr_times.append(
+                        bench_inference_cuda(m, v, warmup=warmup, repeats=repeats)
+                    )
+                except Exception as e:
+                    print(f"  [error {lbl} n={n} k={k}: {e}]")
+                    rsr_times.append(float("nan"))
 
             all_times = base_times + rsr_times
             valid = [t for t in all_times if not np.isnan(t)]

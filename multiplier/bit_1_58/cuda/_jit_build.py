@@ -1,6 +1,7 @@
 """Helper to JIT-compile CUDA kernels with proper arch detection."""
 
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -17,6 +18,23 @@ def _ensure_cuda_arch():
 
 
 _ensure_cuda_arch()
+
+
+def _ensure_venv_bin_on_path():
+    """Make helper executables installed in the current venv visible.
+
+    We often invoke scripts as ``./venv/bin/python`` without activating the
+    environment, so PATH may not include the matching ``venv/bin`` directory.
+    PyTorch's extension loader looks for ``ninja`` on PATH; prepend the current
+    interpreter's bin directory so JIT builds work consistently.
+    """
+    bindir = os.path.dirname(sys.executable)
+    path_entries = os.environ.get("PATH", "").split(os.pathsep)
+    if bindir and bindir not in path_entries:
+        os.environ["PATH"] = os.pathsep.join([bindir, *path_entries]) if path_entries else bindir
+
+
+_ensure_venv_bin_on_path()
 
 _KERNEL_DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "kernels", "bit_1_58", "cuda"

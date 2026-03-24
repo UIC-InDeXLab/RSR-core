@@ -4,7 +4,7 @@ Benchmark inference time of non-square ternary matrix-vector multiply on CUDA.
 Compares:
   - pytorch_fp32: dense torch matmul on CUDA (baseline)
   - pytorch_fp16: FP16 matmul on CUDA
-  - rsr_ternary_nonsquare: RSR v6.3 non-square ternary multiplier
+  - rsr_ternary_nonsquare: RSR v2.0 ternary multiplier
 
 Timing: uses CUDA events for accurate GPU measurement; reports median
 inference latency (preprocessing excluded).
@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 assert torch.cuda.is_available(), "CUDA not available"
 
 from multiplier.bit_1_58.pytorch import PytorchMultiplier, PytorchFP16Multiplier
-from multiplier.bit_1_58.cuda.rsr_cuda_v6_3_nonsquare import RSRTernaryCudaV6_3NonSquareMultiplier
+from multiplier.bit_1_58.cuda.rsr_cuda_v2_0 import RSRTernaryCudaV2_0Multiplier
 
 
 def bench_inference_cuda(multiplier, v, warmup=5, repeats=20):
@@ -115,7 +115,7 @@ def main():
 
         for k in k_values:
             try:
-                m_rsr = RSRTernaryCudaV6_3NonSquareMultiplier(M, k)
+                m_rsr = RSRTernaryCudaV2_0Multiplier(M, k)
                 t_rsr = bench_inference_cuda(m_rsr, v, warmup=warmup, repeats=repeats)
             except Exception as e:
                 print(f"  [error rsr_ternary_nonsquare k={k}: {e}]")

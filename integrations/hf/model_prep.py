@@ -215,59 +215,35 @@ def preprocess_layer_cpu(weight: torch.Tensor, k: int) -> dict:
 
 
 def preprocess_layer_cuda(weight: torch.Tensor, k: int) -> dict:
-    """Apply CUDA-targeted RSR preprocessing (adaptive) to a ternary weight matrix.
+    """Apply CUDA-targeted RSR preprocessing for the retained v2.0 kernel.
 
-    Uses the adaptive strategy: effective_k = min(k, 12), and INT2 weight
-    packing compatible with the v6.3 CUDA kernel.  Pads rows to a multiple
-    of effective_k and columns to a multiple of 32 (for aligned int4/uint32_t
-    loads on the GPU).
-
-    This is a pure CPU/numpy operation — no CUDA device is needed at
-    preprocessing time.
+    This builds the compact metadata consumed by
+    ``multiplier.bit_1_58.cuda.rsr_cuda_v2_0``. The work happens on CPU, so a
+    CUDA device is not required at preprocessing time.
 
     Args:
         weight: int8 ternary matrix of shape (n_rows, n_cols), values in {-1, 0, +1}
-        k: block height for RSR decomposition (clamped to max 12)
+        k: block height for RSR decomposition (must satisfy 0 < k <= 16)
 
     Returns:
-        Dict with ``packed`` (uint8 INT2-packed weights) and padding metadata.
+        Dict with the compact tensors expected by the CUDA v2.0 runtime.
     """
-    import math
-    import numpy as np
+    from multiplier.bit_1_58.cuda._prep_v2_common import prep_compact_u64
 
     n_rows, n_cols = weight.shape
-    effective_k = min(k, 12)
-
-    # Pad rows to multiple of effective_k
-    n_rows_padded = ((n_rows + effective_k - 1) // effective_k) * effective_k
-
-    # Pad cols to multiple of 32 for aligned CUDA memory access
-    col_align = math.lcm(4, 32)  # = 32
-    n_cols_padded = ((n_cols + col_align - 1) // col_align) * col_align
-
-    w = weight.to(torch.int8).cpu()
-    if n_rows_padded != n_rows or n_cols_padded != n_cols:
-        padded = torch.zeros(n_rows_padded, n_cols_padded, dtype=torch.int8)
-        padded[:n_rows, :n_cols] = w
-        w = padded
-
-    # INT2 packing: 4 values per byte
-    # Encoding: -1 -> 1, 0 -> 2, +1 -> 3  (kernel subtracts 2 to decode)
-    M_np = w.numpy()
-    num_blocks = n_rows_padded // effective_k
-    M_r = M_np.reshape(num_blocks, effective_k, n_cols_padded)
-    encoded = (M_r.astype(np.int8) + 2).astype(np.uint8)
-    enc4 = encoded.reshape(num_blocks, effective_k, n_cols_padded // 4, 4)
-    packed = (
-        enc4[:, :, :, 0]
-        | (enc4[:, :, :, 1] << 2)
-        | (enc4[:, :, :, 2] << 4)
-        | (enc4[:, :, :, 3] << 6)
-    ).astype(np.uint8)
-    packed = packed.reshape(num_blocks * effective_k, n_cols_padded // 4)
-
+    n_rows_padded = ((n_rows + k - 1) // k) * k
+    perms, group_packed, block_meta, _ = prep_compact_u64(
+        weight.to(torch.float32).cpu(),
+        n_rows,
+        n_cols,
+        k,
+        n_rows_padded,
+        torch.device("cpu"),
+    )
     return {
-        "packed": torch.from_numpy(packed.copy()),
+        "perms": perms.contiguous(),
+        "group_packed": group_packed.contiguous(),
+        "block_meta": block_meta.contiguous(),
     }
 
 
@@ -487,18 +463,11 @@ def preprocess_model(
             "backend": device,
             "weight_scale_mode": _detect_weight_scale_mode(module),
         }
-        # CUDA adaptive: record effective_k and padded dimensions
+        # CUDA v2.0: record row padding and block count for runtime setup
         if device == "cuda":
-            import math
-            effective_k = min(layer_k, 12)
-            col_align = math.lcm(4, 32)
-            meta["effective_k"] = effective_k
-            meta["n_rows_padded"] = (
-                ((n_rows + effective_k - 1) // effective_k) * effective_k
-            )
-            meta["n_cols_padded"] = (
-                ((n_cols + col_align - 1) // col_align) * col_align
-            )
+            n_rows_padded = ((n_rows + layer_k - 1) // layer_k) * layer_k
+            meta["n_rows_padded"] = n_rows_padded
+            meta["num_blocks"] = n_rows_padded // layer_k
         layer_meta[name] = meta
 
     # --- save --------------------------------------------------------------

@@ -45,7 +45,7 @@ from multiplier.bit_1_58.cpu._rsr_v3_common import (  # noqa: E402
 _KERNEL_DIR = _PROJECT_ROOT / "kernels" / "bit_1_58" / "cpu"
 _RSR_V33_LIB = None
 _RSR_TENSOR_KEYS = ("perms", "group_ends", "pos_masks", "neg_masks", "block_meta")
-_RSR_CUDA_TENSOR_KEYS = ("packed",)
+_RSR_CUDA_TENSOR_KEYS = ("perms", "group_packed", "block_meta")
 _RSR_CUDA_MODULE = None
 
 
@@ -194,12 +194,12 @@ def _load_rsr_cuda_module():
     if _RSR_CUDA_MODULE is None:
         from multiplier.bit_1_58.cuda._jit_build import load_kernel
 
-        _RSR_CUDA_MODULE = load_kernel("rsr_ternary_cuda_v6_3", "rsr_ternary_v6_3.cu")
+        _RSR_CUDA_MODULE = load_kernel("rsr_ternary_cuda_v2_0", "rsr_ternary_v2_0.cu")
     return _RSR_CUDA_MODULE
 
 
 class _PreprocessedRSRCudaMultiplier:
-    """CUDA GEMV runtime built from saved INT2-packed weights."""
+    """CUDA GEMV runtime built from saved v2.0 compact metadata."""
 
     def __init__(
         self,
@@ -210,21 +210,30 @@ class _PreprocessedRSRCudaMultiplier:
         self.layer_name = layer_name
         self.n_rows = int(layer_meta["n_rows"])
         self.n_cols = int(layer_meta["n_cols"])
-        self.k = int(layer_meta.get("effective_k", layer_meta["k"]))
-        self.n_rows_padded = int(layer_meta.get("n_rows_padded", self.n_rows))
-        self.n_cols_padded = int(layer_meta.get("n_cols_padded", self.n_cols))
-        self.k_dim = 32
+        self.k = int(layer_meta["k"])
+        self.n_rows_padded = int(
+            layer_meta.get(
+                "n_rows_padded",
+                ((self.n_rows + self.k - 1) // self.k) * self.k,
+            )
+        )
+        self._num_blocks = int(
+            layer_meta.get("num_blocks", self.n_rows_padded // self.k)
+        )
         self.device = torch.device("cuda")
 
-        self._packed = tensors["packed"].to(dtype=torch.uint8, device=self.device)
-        self._num_blocks = self.n_rows_padded // self.k
+        self._perms = tensors["perms"].to(dtype=torch.uint16, device=self.device)
+        self._group_packed = tensors["group_packed"].to(
+            dtype=torch.int64,
+            device=self.device,
+        )
+        self._block_meta = tensors["block_meta"].to(
+            dtype=torch.int32,
+            device=self.device,
+        )
         self._out = torch.empty(
             self.n_rows_padded, dtype=torch.float32, device=self.device
         )
-        self._v_i8_buf = torch.empty(
-            self.n_cols_padded, dtype=torch.int8, device=self.device
-        )
-        self._inv_scale_buf = torch.empty(1, dtype=torch.float32, device=self.device)
 
     def __call__(self, vector: torch.Tensor) -> torch.Tensor:
         if vector.ndim != 1 or vector.shape[0] != self.n_cols:
@@ -233,26 +242,20 @@ class _PreprocessedRSRCudaMultiplier:
                 f"got {tuple(vector.shape)}"
             )
 
-        v_gpu = vector.to(self.device) if vector.device != self.device else vector
+        if vector.device != self.device or vector.dtype != torch.float32:
+            v_gpu = vector.to(self.device, dtype=torch.float32)
+        else:
+            v_gpu = vector
 
-        # Pad input vector if columns were padded during preprocessing
-        if self.n_cols_padded != self.n_cols:
-            v_padded = torch.zeros(
-                self.n_cols_padded, dtype=v_gpu.dtype, device=self.device
-            )
-            v_padded[: self.n_cols] = v_gpu
-            v_gpu = v_padded
-
-        _load_rsr_cuda_module().rsr_direct_v6_3_fused(
-            self._packed,
+        _load_rsr_cuda_module().rsr_ternary_gemv_v2_0(
+            self._perms,
+            self._group_packed,
+            self._block_meta,
             v_gpu.contiguous(),
-            self._v_i8_buf,
-            self._inv_scale_buf,
             self._out,
-            self.n_cols_padded,
+            self.n_cols,
             self.k,
             self._num_blocks,
-            self.k_dim,
         )
         return self._out[: self.n_rows]
 
@@ -379,6 +382,12 @@ def _load_layer_tensors(
     expected_keys = _RSR_CUDA_TENSOR_KEYS if backend == "cuda" else _RSR_TENSOR_KEYS
     tensors = {}
     keys = set(handle.keys())
+    if backend == "cuda" and prefix + "packed" in keys:
+        raise KeyError(
+            f"Found legacy CUDA tensor {prefix + 'packed'!r}. "
+            "Re-run integrations/hf/model_prep.py to regenerate CUDA "
+            "artifacts for the retained v2.0 kernel."
+        )
     for key in expected_keys:
         tensor_key = prefix + key
         if tensor_key not in keys:

@@ -50,19 +50,15 @@ def _make_cpu_rsr_linear(n_rows, n_cols, k=8, weight_scale_mode="multiply",
 def _make_cuda_rsr_linear(n_rows, n_cols, k=8, weight_scale_mode="multiply",
                            weight_scale_val=None):
     """Build an RSRLinear from a random ternary matrix (CUDA backend)."""
-    import math
     w = _make_ternary_weight(n_rows, n_cols)
     arrays = preprocess_layer_cuda(w, k=k)
-    effective_k = min(k, 12)
-    col_align = math.lcm(4, 32)
     meta = {
         "n_rows": n_rows,
         "n_cols": n_cols,
         "k": k,
         "backend": "cuda",
-        "effective_k": effective_k,
-        "n_rows_padded": ((n_rows + effective_k - 1) // effective_k) * effective_k,
-        "n_cols_padded": ((n_cols + col_align - 1) // col_align) * col_align,
+        "n_rows_padded": ((n_rows + k - 1) // k) * k,
+        "num_blocks": ((n_rows + k - 1) // k),
         "weight_scale_mode": weight_scale_mode,
     }
     ws = torch.tensor([weight_scale_val]) if weight_scale_val is not None else None
@@ -323,23 +319,19 @@ class TestPrepInferRoundtripCPU:
 class TestPrepInferRoundtripCUDA:
     def test_roundtrip(self):
         """Preprocess → save → load → RSRLinear forward (CUDA)."""
-        import math
         from safetensors import safe_open
 
         n_rows, n_cols, k = 32, 64, 8
         w = _make_ternary_weight(n_rows, n_cols)
         arrays = preprocess_layer_cuda(w, k=k)
-        effective_k = min(k, 12)
-        col_align = math.lcm(4, 32)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             out = Path(tmpdir) / "model"
             meta = {
                 "n_rows": n_rows, "n_cols": n_cols, "k": k,
                 "backend": "cuda", "weight_scale_mode": "multiply",
-                "effective_k": effective_k,
-                "n_rows_padded": ((n_rows + effective_k - 1) // effective_k) * effective_k,
-                "n_cols_padded": ((n_cols + col_align - 1) // col_align) * col_align,
+                "n_rows_padded": ((n_rows + k - 1) // k) * k,
+                "num_blocks": ((n_rows + k - 1) // k),
             }
             rsr_data = {"test_layer": arrays}
             layer_meta = {"test_layer": meta}
@@ -350,7 +342,11 @@ class TestPrepInferRoundtripCUDA:
             )
 
             with safe_open(out / "rsr_weights.safetensors", framework="pt") as handle:
-                tensors = {"packed": handle.get_tensor("test_layer.packed")}
+                tensors = {
+                    "perms": handle.get_tensor("test_layer.perms"),
+                    "group_packed": handle.get_tensor("test_layer.group_packed"),
+                    "block_meta": handle.get_tensor("test_layer.block_meta"),
+                }
 
             layer = RSRLinear("test_layer", meta, tensors)
             x = torch.randn(n_cols)

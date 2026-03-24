@@ -85,7 +85,8 @@ def bench_cpu(shapes, k_values, warmup, repeats):
 
         t_fp32 = bench_inference(
             lambda: PytorchMultiplier(M)(v) if False else None,
-            warmup=0, repeats=1,
+            warmup=0,
+            repeats=1,
         )
         # Proper baselines
         pt = PytorchMultiplier(M)
@@ -96,15 +97,19 @@ def bench_cpu(shapes, k_values, warmup, repeats):
         pt_bf = PytorchBF16Multiplier(M)
         t_bf16 = bench_inference(lambda: pt_bf(v), warmup=warmup, repeats=repeats)
 
-        print(f"\n  Shape ({n_rows:>5}, {n_cols:>5})  "
-              f"FP32={t_fp32*1e3:.3f}ms  BF16={t_bf16*1e3:.3f}ms")
+        print(
+            f"\n  Shape ({n_rows:>5}, {n_cols:>5})  "
+            f"FP32={t_fp32*1e3:.3f}ms  BF16={t_bf16*1e3:.3f}ms"
+        )
 
         best_k, best_t = None, float("inf")
         for k in k_values:
             try:
                 rsr = RSRTernaryV3_3NonSquareMultiplier(M, k)
                 t_rsr = bench_inference(
-                    lambda: rsr(v), warmup=warmup, repeats=repeats,
+                    lambda: rsr(v),
+                    warmup=warmup,
+                    repeats=repeats,
                 )
             except Exception as e:
                 print(f"    k={k:>2}  FAILED: {e}")
@@ -117,17 +122,23 @@ def bench_cpu(shapes, k_values, warmup, repeats):
                 best_t = t_rsr
                 best_k = k
                 tag = " <-- best"
-            print(f"    k={k:>2}  RSR={t_rsr*1e3:.3f}ms  "
-                  f"vs FP32={speedup_fp32:.2f}x  vs BF16={speedup_bf16:.2f}x{tag}")
+            print(
+                f"    k={k:>2}  RSR={t_rsr*1e3:.3f}ms  "
+                f"vs FP32={speedup_fp32:.2f}x  vs BF16={speedup_bf16:.2f}x{tag}"
+            )
 
-            rows.append({
-                "n_rows": n_rows, "n_cols": n_cols, "k": k,
-                "rsr_ms": round(t_rsr * 1e3, 4),
-                "fp32_ms": round(t_fp32 * 1e3, 4),
-                "bf16_ms": round(t_bf16 * 1e3, 4),
-                "speedup_vs_fp32": round(speedup_fp32, 3),
-                "speedup_vs_bf16": round(speedup_bf16, 3),
-            })
+            rows.append(
+                {
+                    "n_rows": n_rows,
+                    "n_cols": n_cols,
+                    "k": k,
+                    "rsr_ms": round(t_rsr * 1e3, 4),
+                    "fp32_ms": round(t_fp32 * 1e3, 4),
+                    "bf16_ms": round(t_bf16 * 1e3, 4),
+                    "speedup_vs_fp32": round(speedup_fp32, 3),
+                    "speedup_vs_bf16": round(speedup_bf16, 3),
+                }
+            )
 
     return rows
 
@@ -151,9 +162,7 @@ def bench_cuda_inference(fn, warmup=5, repeats=20):
 
 
 def bench_cuda(shapes, k_values, warmup, repeats):
-    from multiplier.bit_1_58.cuda.rsr_cuda_v6_3_nonsquare import (
-        RSRTernaryCudaV6_3NonSquareMultiplier,
-    )
+    from multiplier.bit_1_58.cuda.rsr_cuda_v2_0 import RSRTernaryCudaV2_0Multiplier
 
     rows = []
     for n_rows, n_cols in shapes:
@@ -178,17 +187,18 @@ def bench_cuda(shapes, k_values, warmup, repeats):
 
         t_bf16 = bench_cuda_inference(pt_bf16, warmup=warmup, repeats=repeats)
 
-        print(f"\n  Shape ({n_rows:>5}, {n_cols:>5})  "
-              f"FP32={t_fp32*1e3:.3f}ms  BF16={t_bf16*1e3:.3f}ms")
+        print(
+            f"\n  Shape ({n_rows:>5}, {n_cols:>5})  "
+            f"FP32={t_fp32*1e3:.3f}ms  BF16={t_bf16*1e3:.3f}ms"
+        )
 
         best_k, best_t = None, float("inf")
         for k in k_values:
             try:
-                rsr = RSRTernaryCudaV6_3NonSquareMultiplier(M, k)
-                v_dev = v.cuda()
+                rsr = RSRTernaryCudaV2_0Multiplier(M, k)
 
                 def rsr_fn():
-                    rsr(v_dev)
+                    rsr(v_cuda)
 
                 t_rsr = bench_cuda_inference(rsr_fn, warmup=warmup, repeats=repeats)
             except Exception as e:
@@ -202,17 +212,23 @@ def bench_cuda(shapes, k_values, warmup, repeats):
                 best_t = t_rsr
                 best_k = k
                 tag = " <-- best"
-            print(f"    k={k:>2}  RSR={t_rsr*1e3:.3f}ms  "
-                  f"vs FP32={speedup_fp32:.2f}x  vs BF16={speedup_bf16:.2f}x{tag}")
+            print(
+                f"    k={k:>2}  RSR={t_rsr*1e3:.3f}ms  "
+                f"vs FP32={speedup_fp32:.2f}x  vs BF16={speedup_bf16:.2f}x{tag}"
+            )
 
-            rows.append({
-                "n_rows": n_rows, "n_cols": n_cols, "k": k,
-                "rsr_ms": round(t_rsr * 1e3, 4),
-                "fp32_ms": round(t_fp32 * 1e3, 4),
-                "bf16_ms": round(t_bf16 * 1e3, 4),
-                "speedup_vs_fp32": round(speedup_fp32, 3),
-                "speedup_vs_bf16": round(speedup_bf16, 3),
-            })
+            rows.append(
+                {
+                    "n_rows": n_rows,
+                    "n_cols": n_cols,
+                    "k": k,
+                    "rsr_ms": round(t_rsr * 1e3, 4),
+                    "fp32_ms": round(t_fp32 * 1e3, 4),
+                    "bf16_ms": round(t_bf16 * 1e3, 4),
+                    "speedup_vs_fp32": round(speedup_fp32, 3),
+                    "speedup_vs_bf16": round(speedup_bf16, 3),
+                }
+            )
 
     return rows
 
@@ -232,10 +248,15 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--device", required=True, choices=["cpu", "cuda"])
-    parser.add_argument("--shapes", nargs="+", default=None,
-                        help="Override shapes (NxM format). Default: all preprocessed model shapes.")
-    parser.add_argument("--k-values", nargs="+", type=int, default=K_VALUES,
-                        help="k values to test")
+    parser.add_argument(
+        "--shapes",
+        nargs="+",
+        default=None,
+        help="Override shapes (NxM format). Default: all preprocessed model shapes.",
+    )
+    parser.add_argument(
+        "--k-values", nargs="+", type=int, default=K_VALUES, help="k values to test"
+    )
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--repeats", type=int, default=30)
     args = parser.parse_args()
@@ -261,8 +282,16 @@ def main():
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     csv_path = reports_dir / f"best_k_{args.device}.csv"
-    fieldnames = ["n_rows", "n_cols", "k", "rsr_ms", "fp32_ms", "bf16_ms",
-                  "speedup_vs_fp32", "speedup_vs_bf16"]
+    fieldnames = [
+        "n_rows",
+        "n_cols",
+        "k",
+        "rsr_ms",
+        "fp32_ms",
+        "bf16_ms",
+        "speedup_vs_fp32",
+        "speedup_vs_bf16",
+    ]
     with open(csv_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
@@ -292,12 +321,16 @@ def main():
     print(f"\n{'='*78}")
     print(f"  BEST k PER SHAPE  (device={args.device})")
     print(f"{'='*78}")
-    print(f"  {'Shape':>14}  {'k':>3}  {'RSR':>9}  {'FP32':>9}  {'BF16':>9}  {'vs FP32':>8}  {'vs BF16':>8}")
+    print(
+        f"  {'Shape':>14}  {'k':>3}  {'RSR':>9}  {'FP32':>9}  {'BF16':>9}  {'vs FP32':>8}  {'vs BF16':>8}"
+    )
     print(f"  {'-'*72}")
     for key in sorted(best_map, key=lambda k: tuple(int(x) for x in k.split("x"))):
         b = best_map[key]
-        print(f"  {key:>14}  {b['k']:>3}  {b['rsr_ms']:>8.3f}ms  {b['fp32_ms']:>8.3f}ms"
-              f"  {b['bf16_ms']:>8.3f}ms  {b['speedup_vs_fp32']:>7.2f}x  {b['speedup_vs_bf16']:>7.2f}x")
+        print(
+            f"  {key:>14}  {b['k']:>3}  {b['rsr_ms']:>8.3f}ms  {b['fp32_ms']:>8.3f}ms"
+            f"  {b['bf16_ms']:>8.3f}ms  {b['speedup_vs_fp32']:>7.2f}x  {b['speedup_vs_bf16']:>7.2f}x"
+        )
 
 
 if __name__ == "__main__":
