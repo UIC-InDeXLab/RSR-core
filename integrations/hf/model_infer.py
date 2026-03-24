@@ -49,6 +49,11 @@ from multiplier.bit_1_58.cuda.rsr_runtime import (  # noqa: E402
 )
 
 
+def _bitnet_act_quant(activation: torch.Tensor) -> torch.Tensor:
+    """Compatibility wrapper around the shared BitNet activation quantizer."""
+    return bitnet_act_quant(activation)
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
@@ -175,10 +180,13 @@ class RSRLinear(nn.Module):
         if self.rms_norm is not None:
             inputs = self.rms_norm(inputs)
 
+        input_device = inputs.device
+        input_dtype = inputs.dtype
+
         if self._cuda_backend:
-            # CUDA path: unchanged — the kernel does its own quantization.
-            inputs = inputs.float()
-            flat_inputs = inputs.reshape(-1, self.in_features)
+            # CUDA path: run the kernel in float32, then restore the caller's
+            # activation dtype so surrounding bf16 modules keep matching dtypes.
+            flat_inputs = inputs.float().reshape(-1, self.in_features)
             out_device = self.multiplier.device
             flat_outputs = torch.empty(
                 (flat_inputs.shape[0], self.out_features),
@@ -231,8 +239,8 @@ class RSRLinear(nn.Module):
             else:
                 output = output * ws
 
-        if inputs.device.type != "cpu" or inputs.dtype != output.dtype:
-            output = output.to(device=inputs.device, dtype=inputs.dtype)
+        if output.device != input_device or output.dtype != input_dtype:
+            output = output.to(device=input_device, dtype=input_dtype)
         return output
 
     def extra_repr(self) -> str:

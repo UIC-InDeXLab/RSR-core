@@ -189,6 +189,20 @@ class TestRSRLinearCUDA:
         out = layer(x)
         assert out.shape == (4, 32)
 
+    def test_preserves_bfloat16_for_downstream_cuda_linear(self):
+        layer, _ = _make_cuda_rsr_linear(32, 64)
+        x = torch.randn(4, 64, device="cuda", dtype=torch.bfloat16)
+
+        out = layer(x)
+
+        assert out.device.type == "cuda"
+        assert out.dtype == torch.bfloat16
+
+        downstream = nn.Linear(32, 16, bias=False, device="cuda", dtype=torch.bfloat16)
+        y = downstream(out)
+        assert y.dtype == torch.bfloat16
+        assert y.shape == (4, 16)
+
     def test_weight_scale_multiply(self):
         layer, _ = _make_cuda_rsr_linear(32, 64, weight_scale_mode="multiply",
                                           weight_scale_val=2.0)
