@@ -65,7 +65,10 @@ env/
 
 .key
 
-benchmarking/**/reports/
+benchmarking/**/reports/**
+!benchmarking/**/reports/
+!benchmarking/**/reports/**/
+!benchmarking/**/reports/**/*.json
 
 out.log
 
