@@ -72,6 +72,11 @@ benchmarking/**/reports/**
 
 out.log
 
+assets/*
+!assets/*.png
+!assets/*.webp
+!assets/rsr_baseline_compare.mp4
+
 integrations/**/*.json
 integrations/**/*.safetensors
 

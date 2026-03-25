@@ -9,9 +9,11 @@ import torch
 import torch.nn as nn
 
 from integrations.hf.model_infer import (
+    GreenTextStreamer,
     RSRLinear,
     _bitnet_act_quant,
     _detect_device_from_dir,
+    _print_inference_stats,
     _resolve_module,
     _set_module,
     parse_args,
@@ -405,3 +407,154 @@ class TestWeightScaleModeEffect:
         ws = torch.tensor([3.0])
         layer = RSRLinear("test", meta, arrays, weight_scale=ws)
         assert layer._weight_scale_mode == "multiply"
+
+
+# ---------------------------------------------------------------------------
+# GreenTextStreamer
+# ---------------------------------------------------------------------------
+
+class TestGreenTextStreamer:
+    def test_output_wrapped_in_green(self, capsys):
+        """on_finalized_text prints text wrapped in ANSI green codes."""
+        from transformers import AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+        streamer = GreenTextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+        streamer.on_finalized_text("hello", stream_end=False)
+        captured = capsys.readouterr()
+        assert "\033[32m" in captured.out
+        assert "hello" in captured.out
+        assert "\033[0m" in captured.out
+
+    def test_stream_end_adds_newline(self, capsys):
+        """stream_end=True terminates with a newline."""
+        from transformers import AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+        streamer = GreenTextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+        streamer.on_finalized_text("done", stream_end=True)
+        captured = capsys.readouterr()
+        assert captured.out.endswith("\n")
+
+    def test_green_codes_present_without_tokenizer(self, capsys):
+        """GreenTextStreamer wraps any text in green regardless of content."""
+        from transformers import AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+        streamer = GreenTextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+        for token in ["The", " quick", " brown", " fox"]:
+            streamer.on_finalized_text(token, stream_end=False)
+        captured = capsys.readouterr()
+        assert captured.out.count("\033[32m") == 4
+        assert captured.out.count("\033[0m") == 4
+
+
+# ---------------------------------------------------------------------------
+# _print_inference_stats
+# ---------------------------------------------------------------------------
+
+class TestPrintInferenceStats:
+    def test_contains_required_fields(self, capsys):
+        _print_inference_stats(n_tokens=42, elapsed=1.234)
+        out = capsys.readouterr().out
+        assert "tokens" in out
+        assert "time" in out
+        assert "tok/s" in out
+
+    def test_token_count_displayed(self, capsys):
+        _print_inference_stats(n_tokens=100, elapsed=2.0)
+        out = capsys.readouterr().out
+        assert "100" in out
+
+    def test_elapsed_time_displayed(self, capsys):
+        _print_inference_stats(n_tokens=10, elapsed=3.5)
+        out = capsys.readouterr().out
+        assert "3.500 s" in out
+
+    def test_throughput_displayed(self, capsys):
+        _print_inference_stats(n_tokens=50, elapsed=2.0)
+        out = capsys.readouterr().out
+        assert "25.0" in out  # 50 / 2.0
+
+    def test_zero_elapsed_no_crash(self, capsys):
+        _print_inference_stats(n_tokens=10, elapsed=0.0)
+        out = capsys.readouterr().out
+        assert "tok/s" in out
+        assert "inf" in out
+
+    def test_table_borders(self, capsys):
+        _print_inference_stats(n_tokens=5, elapsed=0.5)
+        out = capsys.readouterr().out
+        assert "┌" in out and "┐" in out
+        assert "└" in out and "┘" in out
+        assert "│" in out
+
+    def test_output_is_bold_cyan(self, capsys):
+        _print_inference_stats(n_tokens=10, elapsed=1.0)
+        out = capsys.readouterr().out
+        assert "\033[1;36m" in out  # bold cyan
+        assert "\033[0m" in out     # reset after each line
+
+
+# ---------------------------------------------------------------------------
+# Stream header ("▶ response")
+# ---------------------------------------------------------------------------
+
+class TestStreamHeader:
+    def test_header_printed_before_tokens(self, capsys, monkeypatch):
+        """generate_text prints a bold-cyan '▶ response' line before streaming."""
+        import integrations.hf.model_infer as mi
+
+        # Minimal stubs so generate_text can run without a real model/tokenizer.
+        fake_ids = torch.tensor([[1, 2, 3, 4]])  # 4 tokens, no prompt
+
+        class _FakeTokenizer:
+            pad_token_id = 0
+            def __call__(self, prompt, return_tensors):
+                return {"input_ids": fake_ids[:, :1]}  # 1-token "prompt"
+            def decode(self, ids, skip_special_tokens):
+                return "ok"
+
+        class _FakeModel(torch.nn.Module):
+            def parameters(self):
+                return iter([torch.empty(1)])
+            def generate(self, **kwargs):
+                return fake_ids
+
+        monkeypatch.setattr(mi, "_print_inference_stats", lambda *a, **k: None)
+
+        mi.generate_text(
+            _FakeModel(), _FakeTokenizer(), "hi",
+            use_chat_template=False, stream=True,
+        )
+        out = capsys.readouterr().out
+        assert "▶ response" in out
+        assert "\033[1;36m" in out
+
+    def test_header_absent_without_stream(self, capsys, monkeypatch):
+        """No header is printed when stream=False."""
+        import integrations.hf.model_infer as mi
+
+        fake_ids = torch.tensor([[1, 2]])
+
+        class _FakeTokenizer:
+            pad_token_id = 0
+            def __call__(self, prompt, return_tensors):
+                return {"input_ids": fake_ids[:, :1]}
+            def decode(self, ids, skip_special_tokens):
+                return "ok"
+
+        class _FakeModel(torch.nn.Module):
+            def parameters(self):
+                return iter([torch.empty(1)])
+            def generate(self, **kwargs):
+                return fake_ids
+
+        monkeypatch.setattr(mi, "_print_inference_stats", lambda *a, **k: None)
+
+        mi.generate_text(
+            _FakeModel(), _FakeTokenizer(), "hi",
+            use_chat_template=False, stream=False,
+        )
+        out = capsys.readouterr().out
+        assert "▶ response" not in out

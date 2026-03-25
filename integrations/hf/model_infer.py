@@ -18,6 +18,7 @@ import argparse
 import copy
 import json
 import sys
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,20 @@ from multiplier.bit_1_58.cuda.rsr_runtime import (  # noqa: E402
     CUDA_TENSOR_KEYS,
     RSRPreprocessedCudaMultiplier,
 )
+
+
+class GreenTextStreamer(TextStreamer):
+    """TextStreamer that prints generated tokens in ANSI green."""
+
+    _GREEN = "\033[32m"
+    _RESET = "\033[0m"
+
+    def on_finalized_text(self, text: str, stream_end: bool = False) -> None:
+        print(
+            f"{self._GREEN}{text}{self._RESET}",
+            flush=True,
+            end="" if not stream_end else "\n",
+        )
 
 
 def _bitnet_act_quant(activation: torch.Tensor) -> torch.Tensor:
@@ -575,6 +590,35 @@ def load_hf_model(
     return model, tokenizer
 
 
+_BOLD_CYAN = "\033[1;36m"
+_RESET      = "\033[0m"
+
+
+def _print_inference_stats(n_tokens: int, elapsed: float) -> None:
+    """Print a bold-cyan summary table with token count, wall time, and throughput."""
+    tok_per_sec = n_tokens / elapsed if elapsed > 0 else float("inf")
+    rows = [
+        ("tokens", str(n_tokens)),
+        ("time",   f"{elapsed:.3f} s"),
+        ("tok/s",  f"{tok_per_sec:.1f}"),
+    ]
+    w_label = max(len(r[0]) for r in rows) + 2
+    w_value = max(len(r[1]) for r in rows) + 2
+    top = f"┌{'─' * w_label}┬{'─' * w_value}┐"
+    mid = f"├{'─' * w_label}┼{'─' * w_value}┤"
+    bot = f"└{'─' * w_label}┴{'─' * w_value}┘"
+
+    def _line(s: str) -> None:
+        print(f"{_BOLD_CYAN}{s}{_RESET}")
+
+    _line(top)
+    for i, (label, value) in enumerate(rows):
+        _line(f"│ {label:<{w_label - 2}} │ {value:>{w_value - 2}} │")
+        if i < len(rows) - 1:
+            _line(mid)
+    _line(bot)
+
+
 @torch.inference_mode()
 def generate_text(
     model: nn.Module,
@@ -602,12 +646,16 @@ def generate_text(
 
     streamer = None
     if stream:
-        streamer = TextStreamer(
+        streamer = GreenTextStreamer(
             tokenizer,
             skip_prompt=True,
             skip_special_tokens=True,
         )
 
+    if stream:
+        print(f"{_BOLD_CYAN}▶ response{_RESET}")
+
+    t0 = time.perf_counter()
     output_ids = model.generate(
         **inputs,
         max_new_tokens=max_new_tokens,
@@ -615,11 +663,13 @@ def generate_text(
         streamer=streamer,
         **generate_kwargs,
     )  # type: ignore
+    elapsed = time.perf_counter() - t0
 
     prompt_length = inputs["input_ids"].shape[-1]
     generated_ids = output_ids[0, prompt_length:]
     if stream:
         print()
+    _print_inference_stats(len(generated_ids), elapsed)
     return tokenizer.decode(generated_ids, skip_special_tokens=True)
 
 

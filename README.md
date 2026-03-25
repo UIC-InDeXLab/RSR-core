@@ -4,6 +4,16 @@
 
 Reference: [UIC-InDeXLab/RSR](https://github.com/UIC-InDeXLab/RSR)
 
+## Installation
+
+**Prerequisites:** Python >= 3.10, a C compiler (for CPU kernels), and optionally CUDA for GPU support.
+
+```bash
+git clone https://github.com/UIC-InDeXLab/RSR-Core.git
+cd RSR-Core
+pip install -e .
+```
+
 ## Structure
 
 ```
@@ -23,6 +33,17 @@ RSR-core/
 ├── benchmarking/           # Benchmarking scripts & results
 └── tests/                  # Unit and integration tests
 ```
+
+
+## Demo
+
+<!-- <p align="center">
+  <a href="assets/rsr_baseline_compare.mp4">
+    <img src="assets/rsr_baseline_compare.webp" alt="Comparison of the Hugging Face baseline and RSR inference on 1.58-bit LLM inference. Click to open the MP4 version." width="900" />
+  </a>
+</p> -->
+
+[![RSR vs Baseline](assets/rsr_baseline_compare.webp)](https://drive.google.com/file/d/1ub-MITJUepmfBLkyUZFb50hbJsuhgwCH/view?usp=sharing)
 
 ## Benchmark Results
 
