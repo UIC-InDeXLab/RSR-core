@@ -21,6 +21,7 @@ from integrations.hf.model_prep import (
     preprocess_layer_cuda,
     save_preprocessed,
 )
+from multiplier.bit_1_58.cpu.rsr_runtime import select_cpu_tensor_keys
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +317,7 @@ class TestPrepInferRoundtripCPU:
 
             with safe_open(out / "rsr_weights.safetensors", framework="pt") as handle:
                 tensors = {}
-                for key in ["perms", "group_ends", "pos_masks", "neg_masks", "block_meta"]:
+                for key in select_cpu_tensor_keys(n_cols, k):
                     tensors[key] = handle.get_tensor(f"test_layer.{key}")
 
             layer = RSRLinear("test_layer", layer_meta["test_layer"], tensors)

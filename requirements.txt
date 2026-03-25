@@ -1,1 +1,7 @@
+matplotlib
+numpy
+pytest
+safetensors
 torch
+tqdm
+transformers

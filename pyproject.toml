@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rsr-core"
+version = "0.1.0"
+description = "Core RSR kernels, multipliers, integrations, and benchmarks."
+readme = "README.md"
+requires-python = ">=3.10"
+dynamic = ["dependencies"]
+
+[project.urls]
+Repository = "https://github.com/UIC-InDeXLab/RSR-Core"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+include = ["benchmarking*", "integrations*", "multiplier*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

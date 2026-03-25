@@ -20,6 +20,7 @@ from integrations.hf.model_prep import (
     save_preprocessed,
     unpack_ternary_weights,
 )
+from multiplier.bit_1_58.cpu.rsr_runtime import select_cpu_tensor_keys
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +208,9 @@ class TestGetNonQuantizedParams:
 # ---------------------------------------------------------------------------
 
 class TestPreprocessLayerCpu:
-    EXPECTED_KEYS = {"perms", "group_ends", "pos_masks", "neg_masks", "block_meta"}
+    @staticmethod
+    def _expected_keys(n_cols, k):
+        return set(select_cpu_tensor_keys(n_cols, k))
 
     @pytest.mark.parametrize(
         "n_rows,n_cols", [(16, 32), (32, 16), (64, 64), (24, 48)]
@@ -215,7 +218,7 @@ class TestPreprocessLayerCpu:
     def test_output_keys(self, n_rows, n_cols):
         w = torch.randint(-1, 2, (n_rows, n_cols), dtype=torch.int8)
         result = preprocess_layer_cpu(w, k=8)
-        assert set(result.keys()) == self.EXPECTED_KEYS
+        assert set(result.keys()) == self._expected_keys(n_cols, 8)
 
     def test_all_tensors_int32(self):
         w = torch.randint(-1, 2, (32, 32), dtype=torch.int8)
@@ -234,12 +237,12 @@ class TestPreprocessLayerCpu:
         n = 32
         w = torch.eye(n, dtype=torch.int8)
         result = preprocess_layer_cpu(w, k=8)
-        assert set(result.keys()) == self.EXPECTED_KEYS
+        assert set(result.keys()) == self._expected_keys(n, 8)
 
     def test_all_zeros(self):
         w = torch.zeros(16, 32, dtype=torch.int8)
         result = preprocess_layer_cpu(w, k=8)
-        assert set(result.keys()) == self.EXPECTED_KEYS
+        assert set(result.keys()) == self._expected_keys(32, 8)
 
 
 # ---------------------------------------------------------------------------
@@ -291,17 +294,16 @@ class TestPreprocessLayerCuda:
 
 class TestSavePreprocessed:
     def _make_dummy(self):
-        rsr_data = {
-            "layer1": {
-                "perms": torch.zeros(10, dtype=torch.int32),
-                "group_ends": torch.zeros(5, dtype=torch.int32),
-                "pos_masks": torch.zeros(5, dtype=torch.int32),
-                "neg_masks": torch.zeros(5, dtype=torch.int32),
-                "block_meta": torch.zeros(4, dtype=torch.int32),
-            }
-        }
-        non_quantized = {"embed.weight": torch.randn(100, 64)}
         layer_meta = {"layer1": {"n_rows": 32, "n_cols": 64, "k": 8}}
+        rsr_data = {
+            "layer1": {"perms": torch.zeros(10, dtype=torch.int32),
+                       "group_ends": torch.zeros(5, dtype=torch.int32),
+                       "block_meta": torch.zeros(4, dtype=torch.int32)}
+        }
+        for key in select_cpu_tensor_keys(64, 8):
+            if key not in rsr_data["layer1"]:
+                rsr_data["layer1"][key] = torch.zeros(5, dtype=torch.int32)
+        non_quantized = {"embed.weight": torch.randn(100, 64)}
         return rsr_data, non_quantized, layer_meta
 
     def test_creates_output_files(self):
@@ -345,7 +347,7 @@ class TestSavePreprocessed:
                 k=8, version="adaptive", model_name="test",
             )
             loaded = load_file(str(out / "rsr_weights.safetensors"))
-            for key in ["perms", "group_ends", "pos_masks", "neg_masks", "block_meta"]:
+            for key in rsr_data["layer1"]:
                 full_key = f"layer1.{key}"
                 assert full_key in loaded
                 torch.testing.assert_close(loaded[full_key], rsr_data["layer1"][key])
@@ -403,7 +405,7 @@ class TestEndToEnd:
         torch.testing.assert_close(unpacked, weights)
 
         result = preprocess_layer_cpu(unpacked, k=k)
-        assert len(result) == 5
+        assert len(result) == len(select_cpu_tensor_keys(n_cols, k))
 
         with tempfile.TemporaryDirectory() as tmpdir:
             out = Path(tmpdir) / "model"
