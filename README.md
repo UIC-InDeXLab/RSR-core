@@ -1,12 +1,21 @@
 # RSR-core
 
-**RSR (Redundant Segment Reduction)** algorithm.
+**RSR (Redundant Segment Reduction)** for efficient low-bit inference (matrix-vector multiplication).
 
-Reference: [UIC-InDeXLab/RSR](https://github.com/UIC-InDeXLab/RSR)
+This repository contains the core kernels, model integrations, and benchmarking code for **RSR** across CPU and CUDA backends. RSR targets fast matrix-vector multiplication when the matrix is low-bit quantized by grouping repeated column patterns, aggregating the corresponding input values once, and then scattering the result to the affected output rows. 
 
-## Installation
+This is especially useful for workloads such as low-bit LLM inference, where decoding repeatedly applies quantized matvec operations. For the original algorithm, see [UIC-InDeXLab/RSR](https://github.com/UIC-InDeXLab/RSR) and [docs/ALGORITHM.md](docs/ALGORITHM.md).
 
-**Prerequisites:** Python >= 3.10, a C compiler (for CPU kernels), and optionally CUDA for GPU support.
+## Demo 🎬
+Inference on CPU for a 1.58-bit LLM decoding step. Click the image to view the original high-quality video. `HF` denotes the Hugging Face baseline running `bfloat16` on PyTorch.
+
+`PROMPT: "Write the numbers from one to sixty in words separated by commas only:"`
+
+[![RSR vs Baseline](assets/rsr_baseline_compare.webp)](https://drive.google.com/file/d/1ub-MITJUepmfBLkyUZFb50hbJsuhgwCH/view?usp=sharing)
+
+## Installation 🛠️
+
+**Prerequisites:** Python >= 3.10, a C compiler for CPU kernels, and optionally CUDA for GPU support.
 
 ```bash
 git clone https://github.com/UIC-InDeXLab/RSR-Core.git
@@ -14,38 +23,7 @@ cd RSR-Core
 pip install -e .
 ```
 
-## Structure
-
-```
-RSR-core/
-├── multiplier/             # Python wrappers for kernels
-│   ├── bit_1/              # 1-bit (binary) multipliers (CPU/CUDA)
-│   └── bit_1_58/           # 1.58-bit (ternary) multipliers (CPU/CUDA)
-├── kernels/                # Low-level C/CUDA kernel source
-│   ├── bit_1/
-│   │   ├── cpu/            #   C kernels
-│   │   └── cuda/           #   CUDA kernels (.cu)
-│   └── bit_1_58/
-│       ├── cpu/            #   C kernels
-│       └── cuda/           #   CUDA kernels (.cu)
-├── integrations/           # Model integrations
-│   └── hf/                 #   HuggingFace integration
-├── benchmarking/           # Benchmarking scripts & results
-└── tests/                  # Unit and integration tests
-```
-
-
-## Demo
-
-<!-- <p align="center">
-  <a href="assets/rsr_baseline_compare.mp4">
-    <img src="assets/rsr_baseline_compare.webp" alt="Comparison of the Hugging Face baseline and RSR inference on 1.58-bit LLM inference. Click to open the MP4 version." width="900" />
-  </a>
-</p> -->
-
-[![RSR vs Baseline](assets/rsr_baseline_compare.webp)](https://drive.google.com/file/d/1ub-MITJUepmfBLkyUZFb50hbJsuhgwCH/view?usp=sharing)
-
-## Benchmark Results
+## Benchmark Results 📊
 
 ### Matrix-Vector Multiplication
 
@@ -82,3 +60,29 @@ Speedup is computed against the HuggingFace `bfloat16` baseline for the same mod
 | Llama3-8B-1.58-100B-tokens | 31.9 | **59.3** | **1.9x** |
 | bitnet-b1.58-2B-4T-bf16 | 33.1 | **57.4** | **1.7x** |
 | bitnet-b1.58-2B-4T | 41.6 | **57.1** | **1.4x** |
+
+## Updates 📝
+
+<!--
+- Add project updates here.
+-->
+
+## Project Structure 🗂️
+
+```text
+RSR-core/
+├── multiplier/             # Python wrappers for kernels
+│   ├── bit_1/              # 1-bit (binary) multipliers (CPU/CUDA)
+│   └── bit_1_58/           # 1.58-bit (ternary) multipliers (CPU/CUDA)
+├── kernels/                # Low-level C/CUDA kernel source
+│   ├── bit_1/
+│   │   ├── cpu/            #   C kernels
+│   │   └── cuda/           #   CUDA kernels (.cu)
+│   └── bit_1_58/
+│       ├── cpu/            #   C kernels
+│       └── cuda/           #   CUDA kernels (.cu)
+├── integrations/           # Model integrations
+│   └── hf/                 #   HuggingFace integration
+├── benchmarking/           # Benchmarking scripts & results
+└── tests/                  # Unit and integration tests
+```
