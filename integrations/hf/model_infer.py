@@ -18,6 +18,7 @@ import argparse
 import copy
 import json
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -27,8 +28,14 @@ import torch.nn as nn
 from safetensors import safe_open
 from safetensors.torch import load_file as safetensors_load
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextStreamer
-from transformers.modeling_utils import no_init_weights
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+
+try:
+    from transformers.modeling_utils import no_init_weights
+except ImportError:
+    @contextmanager
+    def no_init_weights():
+        yield
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
