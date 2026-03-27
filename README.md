@@ -13,8 +13,8 @@ Inference on CPU for a 1.58-bit LLM decoding step. Click the image to view the o
 
 [![RSR vs Baseline](assets/rsr_baseline_compare.webp)](https://drive.google.com/file/d/1ub-MITJUepmfBLkyUZFb50hbJsuhgwCH/view?usp=sharing)
 
-## Installation 🛠️
-
+## Usage 🛠️
+### Installation 📦
 **Prerequisites:** Python >= 3.10, a C compiler for CPU kernels, and optionally CUDA for GPU support.
 
 ```bash
@@ -23,9 +23,146 @@ cd RSR-Core
 pip install -e .
 ```
 
+### Prepare a model (once) 🧱
+Run `integrations/hf/model_prep.py` once per model to preprocess the ternary
+weights and save the RSR metadata needed for inference.
+
+```bash
+python -m integrations.hf.model_prep \
+  --model microsoft/bitnet-b1.58-2B-4T \
+  --output ./preprocessed_model \
+  --device cpu \
+  --trust-remote-code \
+  --best-k-json benchmarking/bit_1_58/reports/best_k_cpu.json
+```
+
+```text
+CLI args for integrations/hf/model_prep.py:
+  --model, -m           HuggingFace model ID or local path (required)
+  --output, -o          Output directory for the preprocessed model (required)
+  --k                   Block height for RSR decomposition (default: from best_k_{device}.json)
+  --version             RSR multiplier version to use (default: adaptive)
+  --device              Device for model loading: cpu or cuda (default: cpu)
+  --trust-remote-code   Allow remote code when loading HuggingFace models
+  --best-k-json         Optional path to a per-layer best-k JSON file
+                        Default:
+                        benchmarking/bit_1_58/reports/best_k_{device}.json
+```
+
+### Run model inference 🤖
+Use `integrations/hf/model_infer.py` to run generation from a preprocessed
+model directory. The default backend is `rsr`.
+
+```bash
+python -m integrations.hf.model_infer \
+  --model-dir ./preprocessed_model \
+  --backend rsr \
+  --device cpu \
+  --prompt "Write the numbers from one to ten in words." \
+  --max-new-tokens 64 \
+  --stream
+```
+
+```text
+CLI args for integrations/hf/model_infer.py:
+  --model-dir          Directory with rsr_config.json and safetensors artifacts
+                       (default: integrations/hf)
+  --backend            Inference backend: rsr or hf (default: rsr)
+  --tokenizer          Optional tokenizer source
+                       Default: rsr_config.json:model_name
+  --device             Target device; auto-detected from model-dir suffix
+                       (_cpu / _cuda) if omitted
+  --dtype              Optional dtype cast: float32, float16, or bfloat16
+  --prompt             Prompt text to generate from (required)
+  --max-new-tokens     Maximum number of tokens to generate (default: 64)
+  --no-chat-template   Tokenize the raw prompt directly
+  --stream             Stream decoded output as tokens are generated
+```
+
+#### Benchmark on your machine ⏱️
+Use the scripts under `benchmarking/` to reproduce the local numbers for
+kernel-level matvec benchmarks and end-to-end LLM inference.
+
+**Find the best `k` for ternary RSR**
+
+```bash
+python -m benchmarking.bit_1_58.bench_best_k \
+  --device cpu \
+  --shapes 2560x2560 4096x14336 \
+  --k-values 2 4 6 8 10 12 \
+  --warmup 10 \
+  --repeats 30
+```
+
+```text
+CLI args for benchmarking/bit_1_58/bench_best_k.py:
+  --device             Target device: cpu or cuda (required)
+  --shapes             Optional list of matrix shapes in NxM format
+                       Default: all known preprocessed model shapes
+  --k-values           Optional list of k values to test
+                       Default: 2 4 6 8 10 12
+  --warmup             Warmup iterations before timing (default: 10)
+  --repeats            Timed iterations per shape/k (default: 30)
+```
+
+This writes:
+`benchmarking/bit_1_58/reports/best_k_{device}.csv` and
+`benchmarking/bit_1_58/reports/best_k_{device}.json`
+
+**Benchmark matrix-vector multiplication**
+
+The shape benchmark scripts do not take CLI arguments. Configure them by
+editing the constants at the top of the script:
+`SHAPES`, `K_VALUES`, `METHODS`, `REPEATS`, and `WARMUP`.
+
+```bash
+python benchmarking/bit_1/bench_shapes_cpu.py
+python benchmarking/bit_1/bench_shapes_cuda.py
+python benchmarking/bit_1_58/bench_shapes_cpu.py
+python benchmarking/bit_1_58/bench_shapes_cuda.py
+```
+
+Reports are written to:
+`benchmarking/bit_1/reports/results_shapes_{device}.csv`
+`benchmarking/bit_1_58/reports/results_shapes_{device}.csv`
+
+**Benchmark end-to-end LLM inference**
+
+Pass either a single preprocessed model directory or a parent directory that
+contains multiple `*_cpu` or `*_cuda` model directories.
+
+```bash
+python -m benchmarking.llms.bench_inference \
+  --model-dir integrations/hf/preprocessed \
+  --device cpu \
+  --prompt "Write the numbers from one to two hundred in words separated by commas only:" \
+  --max-new-tokens 64 \
+  --warmup 1 \
+  --repeats 3 \
+  --backends rsr hf_float32 hf_bfloat16
+```
+
+```text
+CLI args for benchmarking/llms/bench_inference.py:
+  --model-dir          Single preprocessed model directory or parent directory
+                       containing multiple preprocessed models (required)
+  --prompt             Prompt text to generate from
+                       Default: "Write the numbers from one to two hundred in
+                       words separated by commas only:"
+  --max-new-tokens     Maximum number of generated tokens (default: 64)
+  --warmup             Warmup generations before timing (default: 1)
+  --repeats            Timed generations per backend/model (default: 3)
+  --no-chat-template   Tokenize the raw prompt directly
+  --device             Target device and model suffix filter: cpu or cuda
+                       (required)
+  --backends           Optional backend list:
+                       rsr, hf_float32, hf_bfloat16, hf_float16
+                       Default: rsr + the standard HF dtypes for the device
+```
+
 ## Benchmark Results 📊
 
-### Matrix-Vector Multiplication
+### Matrix-Vector Multiplication 🧮
 
 #### CPU 🖥️
 
@@ -39,7 +176,7 @@ pip install -e .
 |:---:|:---:|
 | ![1-bit CUDA](assets/cuda_bit_1.png) | ![1.58-bit CUDA](assets/cuda_bit_1_58.png) |
 
-### Ternary (1.58bit) LLMs
+### Ternary (1.58bit) LLMs 🤖
 
 Speedup is computed against the HuggingFace `bfloat16` baseline for the same model.
 
@@ -62,10 +199,7 @@ Speedup is computed against the HuggingFace `bfloat16` baseline for the same mod
 | bitnet-b1.58-2B-4T | 41.6 | **57.1** | **1.4x** |
 
 ## Updates 📝
-
-<!--
-- Add project updates here.
--->
+* [03/25/2026] Support HuggingFace models interface.
 
 ## Project Structure 🗂️
 
