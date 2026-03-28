@@ -60,7 +60,7 @@ async def hf_search_models(q: str = "1.58"):
     from huggingface_hub import HfApi
     api = HfApi()
     try:
-        models = list(api.list_models(search=q, limit=30, sort="downloads", direction=-1))
+        models = list(api.list_models(search=q, limit=30, sort="downloads"))
     except Exception as e:
         raise HTTPException(500, str(e))
     return [
@@ -215,7 +215,7 @@ class InferenceRequest(BaseModel):
 
 
 @app.post("/api/inference")
-async def run_inference(req: InferenceRequest):
+def run_inference(req: InferenceRequest):
     """Run inference on a preprocessed model."""
     import torch
 

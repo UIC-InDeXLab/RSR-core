@@ -83,5 +83,6 @@ integrations/**/*.safetensors
 # Frontend
 ui/frontend/node_modules/
 ui/frontend/dist/
+ui/package-lock.json
 
 .claude

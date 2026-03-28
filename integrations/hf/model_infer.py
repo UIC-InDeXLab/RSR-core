@@ -431,7 +431,12 @@ def _replace_ternary_layers(
 def _materialize_meta_buffers(model: nn.Module) -> None:
     rotary = getattr(getattr(model, "model", None), "rotary_emb", None)
     if rotary is not None and hasattr(rotary, "inv_freq") and rotary.inv_freq.is_meta:
-        inv_freq, attention_scaling = rotary.rope_init_fn(rotary.config, device="cpu")
+        if hasattr(rotary, "rope_init_fn"):
+            inv_freq, attention_scaling = rotary.rope_init_fn(rotary.config, device="cpu")
+        elif hasattr(rotary, "compute_default_rope_parameters"):
+            inv_freq, attention_scaling = rotary.compute_default_rope_parameters(rotary.config, device="cpu")
+        else:
+            return
         rotary.register_buffer("inv_freq", inv_freq, persistent=False)
         rotary.original_inv_freq = rotary.inv_freq
         rotary.attention_scaling = attention_scaling
@@ -574,6 +579,10 @@ def load_hf_model(
         torch_dtype = getattr(torch, dtype) if dtype else None
         if torch_dtype is not None:
             load_kwargs["torch_dtype"] = torch_dtype
+
+    # The @torch.compile-decorated unpack_weights in transformers' BitNet
+    # integration fails on CPU with dynamo.  Force eager execution.
+    torch._dynamo.config.suppress_errors = True
 
     model = AutoModelForCausalLM.from_pretrained(model_source, **load_kwargs)
 

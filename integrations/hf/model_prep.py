@@ -468,8 +468,16 @@ def preprocess_model(
         w = module.weight.data.cpu()
 
         if w.dtype == torch.uint8:
-            # Packed format: 4 ternary values per byte
-            weight = unpack_ternary_weights(w)
+            # Distinguish packed (4 values per byte, shape n_rows//4 x n_cols)
+            # from unpacked uint8 ternary (shape n_rows x n_cols, values
+            # in {0, 1, 255} representing {0, +1, -1}).
+            expected_rows = getattr(module, "out_features", None)
+            if expected_rows is not None and w.shape[0] == expected_rows:
+                # Unpacked uint8 ternary (e.g. AutoBitLinear): convert directly
+                weight = w.to(torch.int8)
+            else:
+                # Packed format: 4 ternary values per byte
+                weight = unpack_ternary_weights(w)
         elif getattr(module, "online_quant", False):
             # Online-quantized model (e.g. bitnet-bf16): weights are
             # full-precision, quantize to ternary and derive weight_scale.

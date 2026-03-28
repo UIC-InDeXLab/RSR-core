@@ -2,6 +2,7 @@ matplotlib
 numpy
 pytest
 safetensors
+accelerate
 torch
 tqdm
 transformers
