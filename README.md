@@ -16,6 +16,7 @@ This is especially useful for workloads such as low-bit LLM inference, where dec
 - [Benchmark Results](#benchmark-results-)
 - [Updates](#updates-)
 - [Project Structure](#project-structure-%EF%B8%8F)
+- [Citation](#citation-)
 
 ## Demo 🎬
 Inference on CPU for a 1.58-bit LLM decoding step. Click the image to view the original high-quality video. `HF` denotes the Hugging Face baseline running `bfloat16` on PyTorch.
@@ -63,9 +64,8 @@ CLI args for integrations/hf/model_prep.py:
 ```
 
 > [!NOTE]
-> `k` is hardware-dependent, so run the `best_k` benchmark on the same machine
-> and device you plan to use for inference, then reuse the generated JSON. If
-> no `best_k_{device}.json` is found, `model_prep.py` falls back to `--k`.
+> `k` might be hardware-dependent, so run the `best_k` benchmark on the same machine
+> and device you plan to use for inference, then reuse the generated JSON.
 
 ### Run model inference 🤖
 Use `integrations/hf/model_infer.py` to run generation from a preprocessed
@@ -272,4 +272,17 @@ RSR-core/
 │   ├── backend/            #   REST API server
 │   └── frontend/           #   React dashboard
 └── tests/                  # Unit and integration tests
+```
+
+## Citation 📝
+
+If you use this repository in your research or project, please cite our work:
+
+```bibtex
+@inproceedings{dehghankarefficient,
+  title={An Efficient Matrix Multiplication Algorithm for Accelerating Inference in Binary and Ternary Neural Networks},
+  author={Dehghankar, Mohsen and Erfanian, Mahdi and Asudeh, Abolfazl},
+  booktitle={Forty-second International Conference on Machine Learning},
+  year={2025}
+}
 ```
