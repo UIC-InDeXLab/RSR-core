@@ -35,6 +35,28 @@ cd RSR-Core
 pip install -e .
 ```
 
+#### Building the kernels
+
+**CPU kernels** — Compile the C shared libraries via the provided Makefiles.
+Requires `gcc` with AVX2 and OpenMP support.
+
+```bash
+make -C kernels/bit_1/cpu
+make -C kernels/bit_1_58/cpu
+```
+
+**CUDA kernels** — No manual build step needed. CUDA kernels are JIT-compiled
+by PyTorch on first use (`torch.utils.cpp_extension`). Requirements:
+- CUDA toolkit (matching your PyTorch build)
+- `ninja` (`pip install ninja`)
+
+To rebuild CPU kernels from scratch, run `make clean` first:
+
+```bash
+make -C kernels/bit_1/cpu clean && make -C kernels/bit_1/cpu
+make -C kernels/bit_1_58/cpu clean && make -C kernels/bit_1_58/cpu
+```
+
 *Run tests with `pytest`.*
 
 ### Prepare a model (once) 🧱
