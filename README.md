@@ -4,7 +4,18 @@
 
 This repository contains the core kernels, model integrations, and benchmarking code for **RSR** across CPU and CUDA backends. RSR targets fast matrix-vector multiplication when the matrix is low-bit quantized by grouping repeated column patterns, aggregating the corresponding input values once, and then scattering the result to the affected output rows. 
 
-This is especially useful for workloads such as low-bit LLM inference, where decoding repeatedly applies quantized matvec operations. For the original algorithm, see [UIC-InDeXLab/RSR](https://github.com/UIC-InDeXLab/RSR) and [docs/ALGORITHM.md](docs/ALGORITHM.md).
+This is especially useful for workloads such as low-bit LLM inference, where decoding repeatedly applies quantized matvec operations. For the original algorithm, see [UIC-InDeXLab/RSR](https://github.com/UIC-InDeXLab/RSR).
+
+### Docs 📄
+- [docs/ALGORITHM.md](docs/ALGORITHM.md) — The RSR algorithm explained
+- [docs/OPTIMIZATION.md](docs/OPTIMIZATION.md) — Kernel optimization breakdown for all multiplier versions
+
+### Table of Contents
+- [Demo](#demo-)
+- [Usage](#usage-%EF%B8%8F)
+- [Benchmark Results](#benchmark-results-)
+- [Updates](#updates-)
+- [Project Structure](#project-structure-%EF%B8%8F)
 
 ## Demo 🎬
 Inference on CPU for a 1.58-bit LLM decoding step. Click the image to view the original high-quality video. `HF` denotes the Hugging Face baseline running `bfloat16` on PyTorch.
@@ -22,6 +33,8 @@ git clone https://github.com/UIC-InDeXLab/RSR-Core.git
 cd RSR-Core
 pip install -e .
 ```
+
+*Run tests with `pytest`.*
 
 ### Prepare a model (once) 🧱
 Run `integrations/hf/model_prep.py` once per model to preprocess the ternary
@@ -160,6 +173,32 @@ CLI args for benchmarking/llms/bench_inference.py:
                        Default: rsr + the standard HF dtypes for the device
 ```
 
+### UI 🖥️
+A web-based dashboard for managing the full RSR workflow: browse and
+preprocess models, run inference, compare backends, and view benchmark
+results — all from the browser.
+
+```bash
+./ui/start.sh
+```
+
+This launches the FastAPI backend on `http://localhost:8042` and the Vite
+frontend on `http://localhost:5173`. Press `Ctrl+C` to stop both.
+
+**What you can do:**
+
+- **Models** — List preprocessed models, search HuggingFace Hub for ternary
+  models, inspect configs, and delete models.
+- **Preprocess** — Convert a HuggingFace model to RSR format with
+  configurable `k`, version, and device, with background progress tracking.
+- **Inference** — Generate text from a preprocessed model and compare RSR
+  vs HuggingFace backends side-by-side with performance metrics (tok/s, load
+  time).
+- **Benchmarks** — Browse existing reports, view plots, and launch custom
+  inference benchmarks.
+- **Multipliers** — Discover available kernel implementations for each
+  bit-width and platform.
+
 ## Benchmark Results 📊
 
 ### Matrix-Vector Multiplication 🧮
@@ -200,6 +239,8 @@ Speedup is computed against the HuggingFace `bfloat16` baseline for the same mod
 
 ## Updates 📝
 * [03/25/2026] Support HuggingFace models interface.
+* [03/27/2026] A simple UI added for managing main workflow.
+* [Coming soon...] Support `BitNet` model inference.
 
 ## Project Structure 🗂️
 
@@ -218,5 +259,8 @@ RSR-core/
 ├── integrations/           # Model integrations
 │   └── hf/                 #   HuggingFace integration
 ├── benchmarking/           # Benchmarking scripts & results
+├── ui/                     # Web UI (FastAPI + Vite/React)
+│   ├── backend/            #   REST API server
+│   └── frontend/           #   React dashboard
 └── tests/                  # Unit and integration tests
 ```

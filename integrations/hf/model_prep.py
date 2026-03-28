@@ -25,7 +25,7 @@ import argparse
 import json
 import re
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import torch
@@ -388,6 +388,7 @@ def preprocess_model(
     device: str = "cpu",
     trust_remote_code: bool = False,
     best_k_json: str | Path | None = None,
+    progress_callback: Callable | None = None,
 ):
     """Preprocess a HuggingFace quantized model for RSR inference.
 
@@ -406,17 +407,26 @@ def preprocess_model(
             ``benchmarking/bit_1_58/reports/best_k_{device}.json`` is tried
             automatically; if the file does not exist, *k* is used for every
             layer.
+        progress_callback: Optional callable ``(stage, current, total, detail)``
+            invoked to report progress.  *stage* is one of ``"loading"``,
+            ``"preprocessing"``, ``"saving"``.
     """
     from transformers import AutoConfig, AutoModelForCausalLM
 
     output_path = Path(output_dir) / f"{_model_slug(model_name_or_path)}_{device}"
 
+    def _progress(stage, current=0, total=0, detail=""):
+        if progress_callback is not None:
+            progress_callback(stage, current, total, detail)
+
     # --- load model --------------------------------------------------------
+    _progress("loading", 0, 1, "Loading config...")
     print(f"Loading config from {model_name_or_path} ...")
     config = AutoConfig.from_pretrained(
         model_name_or_path, trust_remote_code=trust_remote_code,
     )
 
+    _progress("loading", 0, 1, "Loading model weights...")
     print(f"Loading model from {model_name_or_path} ...")
     model = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,
@@ -452,7 +462,9 @@ def preprocess_model(
 
     preprocess_fn = preprocess_layer_cuda if device == "cuda" else preprocess_layer_cpu
 
-    for name, module in tqdm(ternary_layers.items(), desc="Preprocessing"):
+    total_layers = len(ternary_layers)
+    for layer_idx, (name, module) in enumerate(tqdm(ternary_layers.items(), desc="Preprocessing")):
+        _progress("preprocessing", layer_idx, total_layers, name)
         w = module.weight.data.cpu()
 
         if w.dtype == torch.uint8:
@@ -491,6 +503,7 @@ def preprocess_model(
         layer_meta[name] = meta
 
     # --- save --------------------------------------------------------------
+    _progress("saving", total_layers, total_layers, "Saving preprocessed data...")
     print(f"Saving to {output_path} ...")
     save_preprocessed(
         rsr_data=rsr_data,
