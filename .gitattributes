@@ -1,1 +1,1 @@
-ui/ export-ignore linguist-generated
+ui/** linguist-vendored
