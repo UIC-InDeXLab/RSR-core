@@ -32,10 +32,13 @@ Inference on CPU for a 1.58-bit LLM decoding step. Click the image to view the o
 ```bash
 git clone https://github.com/UIC-InDeXLab/RSR-Core.git
 cd RSR-Core
-pip install -e .
+pip install -e . --no-build-isolation
 ```
 
 #### Building the kernels
+
+Both CPU and CUDA kernels are automatically built during `pip install -e . --no-build-isolation`.
+You can also build them manually:
 
 **CPU kernels** — Compile the C shared libraries via the provided Makefiles.
 Requires `gcc` with AVX2 and OpenMP support.
@@ -45,8 +48,9 @@ make -C kernels/bit_1/cpu
 make -C kernels/bit_1_58/cpu
 ```
 
-**CUDA kernels** — No manual build step needed. CUDA kernels are JIT-compiled
-by PyTorch on first use (`torch.utils.cpp_extension`). Requirements:
+**CUDA kernels** — Pre-built during install if a GPU is available. If not,
+they are JIT-compiled by PyTorch on first use (`torch.utils.cpp_extension`).
+Requirements:
 - CUDA toolkit (matching your PyTorch build)
 - `ninja` (`pip install ninja`)
 

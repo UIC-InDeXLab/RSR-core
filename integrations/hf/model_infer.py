@@ -582,9 +582,36 @@ def load_hf_model(
 
     # The @torch.compile-decorated unpack_weights in transformers' BitNet
     # integration fails on CPU with dynamo.  Force eager execution.
+    _prev_suppress = torch._dynamo.config.suppress_errors
     torch._dynamo.config.suppress_errors = True
 
     model = AutoModelForCausalLM.from_pretrained(model_source, **load_kwargs)
+
+    torch._dynamo.config.suppress_errors = _prev_suppress
+
+    # Work around a bug in transformers' BitNetDeserialize.convert: it unpacks
+    # ternary weights with dtype=uint8 (the storage dtype) instead of the
+    # model's compute dtype, so -1 wraps to 255 and F.linear gets a dtype
+    # mismatch.  Only apply to BitNet models (detected via quantization_config).
+    # Fix by reinterpreting uint8 as int8 then casting to the model's dtype.
+    _is_bitnet = getattr(model.config, "quantization_config", None) is not None and (
+        getattr(model.config.quantization_config, "quant_method", None) == "bitnet"
+        or (isinstance(model.config.quantization_config, dict)
+            and model.config.quantization_config.get("quant_method") == "bitnet")
+    )
+    if _is_bitnet:
+        # Determine the correct target dtype: use the explicitly requested dtype,
+        # otherwise infer from the non-quantized parameters already in the model.
+        if dtype:
+            _target_dtype = getattr(torch, dtype)
+        else:
+            _non_uint8 = [
+                p.dtype for p in model.parameters() if p.dtype != torch.uint8
+            ]
+            _target_dtype = _non_uint8[0] if _non_uint8 else torch.bfloat16
+        for _name, param in model.named_parameters():
+            if param.dtype == torch.uint8:
+                param.data = param.data.view(torch.int8).to(_target_dtype)
 
     # bitsandbytes models are already placed by device_map; skip .to()
     if quantize not in ("8bit", "4bit"):
