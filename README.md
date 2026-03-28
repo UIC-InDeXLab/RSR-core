@@ -205,6 +205,14 @@ A web-based dashboard for managing the full RSR workflow: browse and
 preprocess models, run inference, compare backends, and view benchmark
 results — all from the browser.
 
+**Prerequisites:** Node.js (for the Vite frontend) and the backend Python
+packages:
+
+```bash
+pip install fastapi "uvicorn[standard]" huggingface_hub
+cd ui/frontend && npm install && cd ../..
+```
+
 ```bash
 ./ui/start.sh
 ```
