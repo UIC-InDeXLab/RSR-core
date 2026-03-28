@@ -6,6 +6,7 @@ import {
   runBenchmark,
   getBenchmarkJob,
   listModels,
+  runMatvecBenchmark,
 } from "../api";
 import Card from "../components/Card";
 import Badge from "../components/Badge";
@@ -150,6 +151,90 @@ function ShapesChart({ data, category }) {
   );
 }
 
+function MatvecResultsChart({ data }) {
+  if (!data || data.length === 0) return <p className="text-gray-500 text-sm">No results</p>;
+
+  // Best k per shape (lowest rsr_ms)
+  const bestPerShape = {};
+  for (const r of data) {
+    if (r.error) continue;
+    if (!bestPerShape[r.shape] || r.rsr_ms < bestPerShape[r.shape].rsr_ms) {
+      bestPerShape[r.shape] = r;
+    }
+  }
+  const barData = Object.values(bestPerShape).map((r) => ({
+    shape: r.shape,
+    RSR: r.rsr_ms,
+    FP32: r.fp32_ms,
+    BF16: r.bf16_ms,
+    k: r.k,
+  }));
+
+  // Line chart: RSR latency by k, one line per shape
+  const shapes = [...new Set(data.filter((r) => !r.error).map((r) => r.shape))];
+  const kSet = [...new Set(data.filter((r) => !r.error).map((r) => r.k))].sort((a, b) => a - b);
+  const lineData = kSet.map((k) => {
+    const point = { k };
+    for (const shape of shapes) {
+      const row = data.find((r) => r.shape === shape && r.k === k && !r.error);
+      if (row) point[shape] = row.rsr_ms;
+    }
+    return point;
+  });
+
+  const lineColors = ["#06b6d4", "#8b5cf6", "#f59e0b", "#10b981", "#ef4444", "#6366f1"];
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
+          Latency Comparison — Best k per Shape (ms)
+        </h4>
+        <ResponsiveContainer width="100%" height={300}>
+          <BarChart data={barData} margin={{ top: 5, right: 20, bottom: 60, left: 10 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+            <XAxis dataKey="shape" tick={{ fill: "#9ca3af", fontSize: 11 }} angle={-45} textAnchor="end" height={60} />
+            <YAxis tick={{ fill: "#9ca3af", fontSize: 11 }} label={{ value: "ms", angle: -90, position: "insideLeft", style: { fill: "#9ca3af", fontSize: 11 } }} />
+            <Tooltip
+              contentStyle={{ background: "#111827", border: "1px solid #374151", borderRadius: 8 }}
+              labelStyle={{ color: "#e5e7eb" }}
+              formatter={(v) => v != null ? `${v.toFixed(3)} ms` : "N/A"}
+            />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Bar dataKey="FP32" fill="#6b7280" radius={[2, 2, 0, 0]} />
+            <Bar dataKey="BF16" fill="#8b5cf6" radius={[2, 2, 0, 0]} />
+            <Bar dataKey="RSR" fill="#06b6d4" radius={[2, 2, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      {shapes.length > 0 && kSet.length > 1 && (
+        <div>
+          <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
+            RSR Latency by k Value (ms)
+          </h4>
+          <ResponsiveContainer width="100%" height={250}>
+            <LineChart data={lineData} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+              <XAxis dataKey="k" tick={{ fill: "#9ca3af", fontSize: 11 }} />
+              <YAxis tick={{ fill: "#9ca3af", fontSize: 11 }} label={{ value: "ms", angle: -90, position: "insideLeft", style: { fill: "#9ca3af", fontSize: 11 } }} />
+              <Tooltip
+                contentStyle={{ background: "#111827", border: "1px solid #374151", borderRadius: 8 }}
+                labelStyle={{ color: "#e5e7eb" }}
+                formatter={(v) => `${v.toFixed(3)} ms`}
+              />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              {shapes.map((s, i) => (
+                <Line key={s} type="monotone" dataKey={s} name={s} stroke={lineColors[i % lineColors.length]} strokeWidth={2} dot={{ r: 3 }} />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function BenchmarksPage() {
   const [tab, setTab] = useState("best_k");
   const [device, setDevice] = useState("cpu");
@@ -161,6 +246,16 @@ export default function BenchmarksPage() {
   const [selectedModel, setSelectedModel] = useState("");
   const [benchJob, setBenchJob] = useState(null);
   const [benchResult, setBenchResult] = useState(null);
+  const [matvecJob, setMatvecJob] = useState(null);
+  const [matvecResult, setMatvecResult] = useState(null);
+  const [matvecProgress, setMatvecProgress] = useState(null);
+  const [matvecConfig, setMatvecConfig] = useState({
+    shapes: "4096x4096\n2560x2560\n2560x6912",
+    k_values: "2,4,6,8,10",
+    bit_width: "1.58",
+    warmup: 5,
+    repeats: 20,
+  });
 
   useEffect(() => {
     listBenchmarkReports().then(setReports).catch(() => {});
@@ -208,9 +303,54 @@ export default function BenchmarksPage() {
     }
   };
 
+  const handleRunMatvecBench = async () => {
+    setMatvecResult(null);
+    setMatvecProgress(null);
+    try {
+      const shapes = matvecConfig.shapes
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const k_values = matvecConfig.k_values
+        .split(",")
+        .map((s) => parseInt(s.trim()))
+        .filter((n) => !isNaN(n));
+
+      const res = await runMatvecBenchmark({
+        shapes,
+        k_values,
+        device,
+        bit_width: matvecConfig.bit_width,
+        warmup: parseInt(matvecConfig.warmup) || 5,
+        repeats: parseInt(matvecConfig.repeats) || 20,
+      });
+      setMatvecJob(res.job_id);
+
+      const poll = setInterval(async () => {
+        try {
+          const status = await getBenchmarkJob(res.job_id);
+          if (status.status === "running") {
+            setMatvecProgress(status);
+          } else {
+            clearInterval(poll);
+            setMatvecJob(null);
+            setMatvecProgress(null);
+            if (status.results) setMatvecResult(status.results);
+            if (status.status === "error") alert(status.progress);
+          }
+        } catch {
+          clearInterval(poll);
+        }
+      }, 2000);
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+
   const TABS = [
     { id: "best_k", label: "Best K" },
     { id: "shapes", label: "Shape Benchmarks" },
+    { id: "matvec", label: "Matvec Benchmark" },
     { id: "inference", label: "Inference Benchmark" },
     { id: "reports", label: "Report Files" },
   ];
@@ -316,6 +456,136 @@ export default function BenchmarksPage() {
             )}
           </Card>
         </div>
+      )}
+
+      {/* Matvec benchmark tab */}
+      {tab === "matvec" && (
+        <Card title="Kernel-Level Matvec Benchmark">
+          <div className="space-y-4">
+            <p className="text-xs text-gray-500">
+              Run matrix-vector multiplication micro-benchmarks with custom shapes and k values.
+              Compares RSR kernel latency against PyTorch baselines.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Shapes (NxM, one per line)</label>
+                <textarea
+                  value={matvecConfig.shapes}
+                  onChange={(e) => setMatvecConfig({ ...matvecConfig, shapes: e.target.value })}
+                  rows={5}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 font-mono focus:outline-none focus:border-cyan-500"
+                  placeholder={"4096x4096\n2560x6912"}
+                />
+              </div>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs text-gray-500 mb-1 block">k values (comma-separated)</label>
+                  <input
+                    value={matvecConfig.k_values}
+                    onChange={(e) => setMatvecConfig({ ...matvecConfig, k_values: e.target.value })}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 mb-1 block">Bit Width</label>
+                  <select
+                    value={matvecConfig.bit_width}
+                    onChange={(e) => setMatvecConfig({ ...matvecConfig, bit_width: e.target.value })}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-cyan-500"
+                  >
+                    <option value="1.58">1.58-bit (ternary)</option>
+                    <option value="1">1-bit (binary)</option>
+                  </select>
+                </div>
+              </div>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs text-gray-500 mb-1 block">Warmup iterations</label>
+                  <input
+                    type="number"
+                    value={matvecConfig.warmup}
+                    onChange={(e) => setMatvecConfig({ ...matvecConfig, warmup: e.target.value })}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 mb-1 block">Repeat count</label>
+                  <input
+                    type="number"
+                    value={matvecConfig.repeats}
+                    onChange={(e) => setMatvecConfig({ ...matvecConfig, repeats: e.target.value })}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={handleRunMatvecBench}
+              disabled={matvecJob}
+              className="w-full py-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+            >
+              {matvecJob && <Spinner size="w-4 h-4" />}
+              {matvecJob
+                ? `Running... (${matvecProgress?.current ?? 0}/${matvecProgress?.total ?? "?"})`
+                : "Run Matvec Benchmark"}
+            </button>
+
+            {matvecResult && (
+              <div className="space-y-6">
+                <MatvecResultsChart data={matvecResult} />
+                <div>
+                  <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                    Data Table
+                  </h4>
+                  <div className="overflow-auto rounded-lg border border-gray-800">
+                    <table className="w-full text-xs">
+                      <thead className="bg-gray-800">
+                        <tr>
+                          <th className="text-left px-3 py-2 text-gray-400">Shape</th>
+                          <th className="text-right px-3 py-2 text-gray-400">k</th>
+                          <th className="text-right px-3 py-2 text-gray-400">RSR (ms)</th>
+                          <th className="text-right px-3 py-2 text-gray-400">FP32 (ms)</th>
+                          <th className="text-right px-3 py-2 text-gray-400">BF16 (ms)</th>
+                          <th className="text-right px-3 py-2 text-gray-400">vs FP32</th>
+                          <th className="text-right px-3 py-2 text-gray-400">vs BF16</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {matvecResult
+                          .filter((r) => !r.error)
+                          .map((r, i) => (
+                            <tr key={i} className="border-t border-gray-800 hover:bg-gray-800/50">
+                              <td className="px-3 py-1.5 text-gray-300 font-mono">{r.shape}</td>
+                              <td className="text-right px-3 py-1.5 text-cyan-400 font-medium">{r.k}</td>
+                              <td className="text-right px-3 py-1.5 text-gray-300">{r.rsr_ms?.toFixed(3)}</td>
+                              <td className="text-right px-3 py-1.5 text-gray-400">{r.fp32_ms?.toFixed(3)}</td>
+                              <td className="text-right px-3 py-1.5 text-gray-400">{r.bf16_ms?.toFixed(3)}</td>
+                              <td className="text-right px-3 py-1.5 text-green-400">
+                                {r.speedup_vs_fp32 ? `${r.speedup_vs_fp32.toFixed(2)}x` : "—"}
+                              </td>
+                              <td className="text-right px-3 py-1.5 text-yellow-400">
+                                {r.speedup_vs_bf16 ? `${r.speedup_vs_bf16.toFixed(2)}x` : "—"}
+                              </td>
+                            </tr>
+                          ))}
+                        {matvecResult
+                          .filter((r) => r.error)
+                          .map((r, i) => (
+                            <tr key={`err-${i}`} className="border-t border-gray-800">
+                              <td className="px-3 py-1.5 text-gray-300 font-mono">{r.shape}</td>
+                              <td className="text-right px-3 py-1.5 text-cyan-400">{r.k}</td>
+                              <td colSpan={5} className="px-3 py-1.5 text-red-400 text-xs">{r.error}</td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </Card>
       )}
 
       {/* Inference benchmark tab */}

@@ -493,6 +493,229 @@ async def run_benchmark(req: BenchmarkRequest):
     return {"job_id": job_id}
 
 
+class MatvecBenchmarkRequest(BaseModel):
+    shapes: list[str]          # e.g. ["4096x4096", "2560x6912"]
+    k_values: list[int] = [2, 4, 6, 8, 10]
+    device: str = "cpu"        # "cpu" or "cuda"
+    bit_width: str = "1.58"    # "1" or "1.58"
+    warmup: int = 5
+    repeats: int = 20
+
+
+@app.post("/api/benchmarks/run-matvec")
+async def run_matvec_benchmark(req: MatvecBenchmarkRequest):
+    """Start a kernel-level matvec benchmark (background thread)."""
+    job_id = f"bench_matvec_{req.device}_{int(time.time())}"
+
+    def run():
+        import numpy as np
+        import torch
+
+        with _job_lock:
+            _jobs[job_id] = {
+                "status": "running",
+                "progress": "Discovering multipliers...",
+                "current": 0,
+                "total": len(req.shapes),
+            }
+
+        try:
+            # Parse shapes
+            shapes = []
+            for s in req.shapes:
+                for sep in ("x", "X", ","):
+                    if sep in s:
+                        parts = s.split(sep)
+                        shapes.append((int(parts[0].strip()), int(parts[1].strip())))
+                        break
+
+            bit_dir = "bit_1_58" if req.bit_width == "1.58" else "bit_1"
+            is_cuda = req.device == "cuda"
+
+            # --- Discover multipliers ---
+            # Baselines (no k)
+            pt_mod = importlib.import_module(f"multiplier.{bit_dir}.pytorch")
+            baselines = []
+            for name, obj in inspect.getmembers(pt_mod, inspect.isclass):
+                if obj.__module__ == pt_mod.__name__ and name.endswith("Multiplier"):
+                    label = name.replace("Multiplier", "").replace("Pytorch", "pytorch_").strip("_")
+                    if not label:
+                        label = "pytorch"
+                    baselines.append((label, obj))
+            # Keep only fp32 and bf16 for brevity
+            baselines = [
+                (l, c) for l, c in baselines
+                if any(tag in l.lower() for tag in ("pytorch", "fp32", "bf16"))
+            ]
+            if not baselines:
+                baselines = [(name, obj) for name, obj in baselines[:2]]
+
+            # RSR multipliers (need k)
+            rsr_versions = []
+            platform = "cuda" if is_cuda else "cpu"
+            pkg_dir = _PROJECT_ROOT / "multiplier" / bit_dir / platform
+            if pkg_dir.exists():
+                for py_file in sorted(pkg_dir.glob("*.py")):
+                    if py_file.stem.startswith("_") or py_file.stem in ("__init__", "base"):
+                        continue
+                    module_path = f"multiplier.{bit_dir}.{platform}.{py_file.stem}"
+                    try:
+                        mod = importlib.import_module(module_path)
+                        cls = next(
+                            (obj for _, obj in inspect.getmembers(mod, inspect.isclass)
+                             if obj.__module__ == module_path and obj.__name__.endswith("Multiplier")),
+                            None,
+                        )
+                        if cls is None:
+                            continue
+                        needs_k = "k" in inspect.signature(cls.__init__).parameters
+                        if needs_k:
+                            rsr_versions.append((py_file.stem, cls))
+                    except Exception:
+                        continue
+
+            # Pick primary RSR version (prefer "nonsquare" or last available)
+            primary_rsr = None
+            for stem, cls in rsr_versions:
+                if "nonsquare" in stem or "v2_0" in stem:
+                    primary_rsr = ("RSR", cls)
+                    break
+            if primary_rsr is None and rsr_versions:
+                primary_rsr = ("RSR", rsr_versions[-1][1])
+
+            # --- Bench helpers ---
+            def bench_cpu(multiplier, v, warmup, repeats):
+                for _ in range(warmup):
+                    multiplier(v)
+                times = []
+                for _ in range(repeats):
+                    t0 = time.perf_counter()
+                    multiplier(v)
+                    t1 = time.perf_counter()
+                    times.append(t1 - t0)
+                return float(np.median(times))
+
+            def bench_cuda(multiplier, v, warmup, repeats):
+                for _ in range(warmup):
+                    multiplier(v)
+                torch.cuda.synchronize()
+                times = []
+                for _ in range(repeats):
+                    start_ev = torch.cuda.Event(enable_timing=True)
+                    end_ev = torch.cuda.Event(enable_timing=True)
+                    start_ev.record()
+                    multiplier(v)
+                    end_ev.record()
+                    torch.cuda.synchronize()
+                    times.append(start_ev.elapsed_time(end_ev) / 1000.0)
+                return float(np.median(times))
+
+            bench_fn = bench_cuda if is_cuda else bench_cpu
+
+            # --- Run benchmarks ---
+            results = []
+
+            for idx, (n_rows, n_cols) in enumerate(shapes):
+                with _job_lock:
+                    _jobs[job_id]["progress"] = f"Benchmarking {n_rows}x{n_cols}..."
+                    _jobs[job_id]["current"] = idx
+
+                # Create matrix and vector
+                if req.bit_width == "1.58":
+                    M = torch.randint(-1, 2, (n_rows, n_cols), dtype=torch.float32)
+                else:
+                    M = torch.randint(0, 2, (n_rows, n_cols), dtype=torch.float32)
+
+                v_device = "cuda" if is_cuda else "cpu"
+                v = torch.randn(n_cols, dtype=torch.float32, device=v_device)
+
+                # Baseline timings
+                baseline_results = {}
+                for label, cls in baselines:
+                    try:
+                        m_input = M.cuda() if is_cuda else M
+                        mul = cls(m_input)
+                        t = bench_fn(mul, v, req.warmup, req.repeats)
+                        baseline_results[label] = round(t * 1e3, 4)
+                    except Exception:
+                        baseline_results[label] = None
+
+                # RSR per k
+                if primary_rsr:
+                    rsr_label, rsr_cls = primary_rsr
+                    for k in req.k_values:
+                        if n_rows % k != 0:
+                            continue
+                        try:
+                            mul = rsr_cls(M, k)
+                            t = bench_fn(mul, v, req.warmup, req.repeats)
+                            rsr_ms = round(t * 1e3, 4)
+                            # Pick a reference baseline for speedup
+                            ref_key = next(
+                                (key for key in ("pytorch_BF16", "pytorch_bf16", "pytorch")
+                                 if key in baseline_results and baseline_results[key] is not None),
+                                None,
+                            )
+                            fp32_key = next(
+                                (key for key in ("pytorch", "pytorch_FP32", "pytorch_fp32")
+                                 if key in baseline_results and baseline_results[key] is not None),
+                                None,
+                            )
+                            row = {
+                                "shape": f"{n_rows}x{n_cols}",
+                                "n_rows": n_rows,
+                                "n_cols": n_cols,
+                                "k": k,
+                                "rsr_ms": rsr_ms,
+                            }
+                            # Attach all baselines
+                            for bl, val in baseline_results.items():
+                                row[f"{bl}_ms"] = val
+                            # Compute speedups
+                            if fp32_key and baseline_results[fp32_key]:
+                                row["fp32_ms"] = baseline_results[fp32_key]
+                                row["speedup_vs_fp32"] = round(baseline_results[fp32_key] / rsr_ms, 3)
+                            if ref_key and baseline_results[ref_key]:
+                                row["bf16_ms"] = baseline_results[ref_key]
+                                row["speedup_vs_bf16"] = round(baseline_results[ref_key] / rsr_ms, 3)
+                            results.append(row)
+                        except Exception as e:
+                            results.append({
+                                "shape": f"{n_rows}x{n_cols}",
+                                "n_rows": n_rows,
+                                "n_cols": n_cols,
+                                "k": k,
+                                "error": str(e),
+                            })
+
+                # Clean up
+                del M
+                if is_cuda:
+                    torch.cuda.empty_cache()
+                gc.collect()
+
+            with _job_lock:
+                _jobs[job_id] = {
+                    "status": "completed",
+                    "results": results,
+                    "current": len(shapes),
+                    "total": len(shapes),
+                }
+
+        except Exception as e:
+            import traceback
+            with _job_lock:
+                _jobs[job_id] = {
+                    "status": "error",
+                    "progress": str(e),
+                    "traceback": traceback.format_exc(),
+                }
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return {"job_id": job_id}
+
+
 @app.get("/api/benchmarks/job/{job_id}")
 async def get_benchmark_status(job_id: str):
     """Check benchmark job status."""

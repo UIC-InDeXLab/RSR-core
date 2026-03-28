@@ -58,6 +58,8 @@ export const getShapesResults = (category, device) =>
 export const runBenchmark = (body) =>
   request("/benchmarks/run", { method: "POST", body: JSON.stringify(body) });
 export const getBenchmarkJob = (jobId) => request(`/benchmarks/job/${jobId}`);
+export const runMatvecBenchmark = (body) =>
+  request("/benchmarks/run-matvec", { method: "POST", body: JSON.stringify(body) });
 
 // System
 export const getSystemInfo = () => request("/system");

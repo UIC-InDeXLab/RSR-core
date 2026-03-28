@@ -62,6 +62,11 @@ CLI args for integrations/hf/model_prep.py:
                         benchmarking/bit_1_58/reports/best_k_{device}.json
 ```
 
+> [!NOTE]
+> `k` is hardware-dependent, so run the `best_k` benchmark on the same machine
+> and device you plan to use for inference, then reuse the generated JSON. If
+> no `best_k_{device}.json` is found, `model_prep.py` falls back to `--k`.
+
 ### Run model inference 🤖
 Use `integrations/hf/model_infer.py` to run generation from a preprocessed
 model directory. The default backend is `rsr`.
@@ -200,6 +205,10 @@ frontend on `http://localhost:5173`. Press `Ctrl+C` to stop both.
   bit-width and platform.
 
 ## Benchmark Results 📊
+
+> [!NOTE]
+> The results below were measured on a machine with Python 3.12.7, PyTorch
+> 2.10.0+cu128, an NVIDIA GeForce RTX 5090, and a 64-logical-thread CPU.
 
 ### Matrix-Vector Multiplication 🧮
 
