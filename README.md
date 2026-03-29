@@ -310,7 +310,7 @@ RSR-core/
 
 ## Citation 📝
 
-If you use this repository in your research or project, please cite our work:
+If you use this repository in your research or project, please cite this work:
 
 ```bibtex
 @inproceedings{dehghankarefficient,
