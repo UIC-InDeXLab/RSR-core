@@ -310,7 +310,16 @@ RSR-core/
 
 ## Citation 📝
 
-If you use this repository in your research or project, please cite this work:
+If you use this repository in your research or project, please cite these papers:
+
+```bibtex
+@article{dehghankar2026rsr,
+  title={RSR-core: A High-Performance Engine for Low-Bit Matrix-Vector Multiplication},
+  author={Dehghankar, Mohsen and Asudeh, Abolfazl},
+  journal={arXiv preprint arXiv:2603.27462},
+  year={2026}
+}
+```
 
 ```bibtex
 @inproceedings{dehghankarefficient,
